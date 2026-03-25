@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
+import anthropic
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent.parent
@@ -40,6 +42,42 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+
+_claude_client: anthropic.Anthropic | None = None
+_conversation_history: dict[int, list] = {}
+
+CLAUDE_SYSTEM_PROMPT = """당신은 The 4th Path 블로그 자동 수익 엔진의 AI 어시스턴트입니다.
+이 시스템(v3)은 4계층 구조로 운영됩니다:
+
+[LAYER 1] AI 콘텐츠 생성: OpenClaw(GPT-5.4)가 원본 마크다운 1개 생성
+[LAYER 2] 변환 엔진: 원본 → 블로그HTML / 인스타카드 / X스레드 / 뉴스레터 자동 변환
+[LAYER 3] 배포 엔진: Blogger / Instagram / X / TikTok / YouTube 순차 발행
+[LAYER 4] 분석봇: 성과 수집 + 주간 리포트 + 피드백 루프
+
+봇 구성:
+- collector_bot: 트렌드/RSS 수집 (07:00)
+- ai_writer: OpenClaw 글 작성 트리거 (08:00)
+- blog_converter: 마크다운→HTML (08:30)
+- card_converter: 인스타 카드 1080×1080 (08:30)
+- thread_converter: X 스레드 변환 (08:30)
+- publisher_bot: Blogger 발행 (09:00)
+- instagram_bot: 인스타 발행 (10:00)
+- x_bot: X 스레드 게시 (11:00)
+- analytics_bot: 분석/리포트 (22:00)
+
+사용 가능한 텔레그램 명령:
+/status — 봇 상태
+/topics — 오늘 수집된 글감
+/pending — 검토 대기 글 목록
+/approve [번호] — 글 승인 및 발행
+/reject [번호] — 글 거부
+/report — 주간 리포트
+/images — 이미지 제작 현황
+/convert — 수동 변환 실행
+
+사용자의 자연어 요청을 이해하고 적절히 안내하거나 답변해주세요.
+한국어로 간결하게 답변하세요."""
 IMAGE_MODE = os.getenv('IMAGE_MODE', 'manual').lower()
 # request 모드에서 이미지 대기 시 사용하는 상태 변수
 # {chat_id: prompt_id} — 다음에 받은 이미지를 어느 프롬프트에 연결할지 기억
@@ -107,7 +145,79 @@ def _call_openclaw(topic_data: dict, output_path: Path):
     output_path.write_text(json.dumps(topic_data, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+def job_convert():
+    """08:30 — 변환 엔진: 원본 마크다운 → 5개 포맷 생성"""
+    if not _publish_enabled:
+        logger.info("[스케줄] 발행 중단 — 변환 건너뜀")
+        return
+    logger.info("[스케줄] 변환 엔진 시작")
+    try:
+        _run_conversion_pipeline()
+    except Exception as e:
+        logger.error(f"변환 엔진 오류: {e}")
+
+
+def _run_conversion_pipeline():
+    """originals/ 폴더의 미변환 원본을 5개 포맷으로 변환"""
+    originals_dir = DATA_DIR / 'originals'
+    originals_dir.mkdir(exist_ok=True)
+    today = datetime.now().strftime('%Y%m%d')
+
+    converters_path = str(BASE_DIR / 'bots' / 'converters')
+    sys.path.insert(0, converters_path)
+    sys.path.insert(0, str(BASE_DIR / 'bots'))
+
+    for orig_file in sorted(originals_dir.glob(f'{today}_*.json')):
+        converted_flag = orig_file.with_suffix('.converted')
+        if converted_flag.exists():
+            continue
+        try:
+            article = json.loads(orig_file.read_text(encoding='utf-8'))
+            slug = article.get('slug', 'article')
+
+            # 1. 블로그 HTML
+            import blog_converter
+            blog_converter.convert(article, save_file=True)
+
+            # 2. 인스타 카드
+            import card_converter
+            card_path = card_converter.convert(article, save_file=True)
+            if card_path:
+                article['_card_path'] = card_path
+
+            # 3. X 스레드
+            import thread_converter
+            thread_converter.convert(article, save_file=True)
+
+            # 4. 쇼츠 영상 (Phase 2 — card 생성 후 시도, 실패해도 계속)
+            if card_path:
+                try:
+                    import shorts_converter
+                    shorts_converter.convert(article, card_path=card_path, save_file=True)
+                except Exception as shorts_err:
+                    logger.debug(f"쇼츠 변환 건너뜀 (Phase 2): {shorts_err}")
+
+            # 5. 뉴스레터 발췌 (주간 묶음용 — 개별 저장은 weekly_report에서)
+            # newsletter_converter는 주간 단위로 묶어서 처리
+
+            # 변환 완료 플래그
+            converted_flag.touch()
+            logger.info(f"변환 완료: {slug}")
+
+            # drafts에 복사 (발행봇이 읽도록)
+            drafts_dir = DATA_DIR / 'drafts'
+            drafts_dir.mkdir(exist_ok=True)
+            draft_path = drafts_dir / orig_file.name
+            if not draft_path.exists():
+                draft_path.write_text(
+                    orig_file.read_text(encoding='utf-8'), encoding='utf-8'
+                )
+        except Exception as e:
+            logger.error(f"변환 오류 ({orig_file.name}): {e}")
+
+
 def job_publish(slot: int):
+    """09:00 — 블로그 발행 (슬롯별)"""
     if not _publish_enabled:
         logger.info(f"[스케줄] 발행 중단 — 슬롯 {slot} 건너뜀")
         return
@@ -116,6 +226,125 @@ def job_publish(slot: int):
         _publish_next()
     except Exception as e:
         logger.error(f"발행봇 오류: {e}")
+
+
+def job_distribute_instagram():
+    """10:00 — 인스타그램 카드 발행"""
+    if not _publish_enabled:
+        return
+    logger.info("[스케줄] 인스타그램 발행")
+    try:
+        _distribute_instagram()
+    except Exception as e:
+        logger.error(f"인스타그램 배포 오류: {e}")
+
+
+def _distribute_instagram():
+    sys.path.insert(0, str(BASE_DIR / 'bots' / 'distributors'))
+    import instagram_bot
+    today = datetime.now().strftime('%Y%m%d')
+    outputs_dir = DATA_DIR / 'outputs'
+    for card_file in sorted(outputs_dir.glob(f'{today}_*_card.png')):
+        ig_flag = card_file.with_suffix('.ig_done')
+        if ig_flag.exists():
+            continue
+        slug = card_file.stem.replace(f'{today}_', '').replace('_card', '')
+        article = _load_article_by_slug(today, slug)
+        if not article:
+            logger.warning(f"Instagram: 원본 article 없음 ({slug})")
+            continue
+        # image_host.py가 로컬 경로 → 공개 URL 변환 처리
+        success = instagram_bot.publish_card(article, str(card_file))
+        if success:
+            ig_flag.touch()
+            logger.info(f"Instagram 발행 완료: {card_file.name}")
+
+
+def job_distribute_x():
+    """11:00 — X 스레드 게시"""
+    if not _publish_enabled:
+        return
+    logger.info("[스케줄] X 스레드 게시")
+    try:
+        _distribute_x()
+    except Exception as e:
+        logger.error(f"X 배포 오류: {e}")
+
+
+def _distribute_x():
+    sys.path.insert(0, str(BASE_DIR / 'bots' / 'distributors'))
+    import x_bot
+    today = datetime.now().strftime('%Y%m%d')
+    outputs_dir = DATA_DIR / 'outputs'
+    for thread_file in sorted(outputs_dir.glob(f'{today}_*_thread.json')):
+        x_flag = thread_file.with_suffix('.x_done')
+        if x_flag.exists():
+            continue
+        slug = thread_file.stem.replace(f'{today}_', '').replace('_thread', '')
+        article = _load_article_by_slug(today, slug)
+        if not article:
+            continue
+        thread_data = json.loads(thread_file.read_text(encoding='utf-8'))
+        success = x_bot.publish_thread(article, thread_data)
+        if success:
+            x_flag.touch()
+
+
+def job_distribute_tiktok():
+    """18:00 — TikTok 쇼츠 업로드"""
+    if not _publish_enabled:
+        return
+    logger.info("[스케줄] TikTok 쇼츠 업로드")
+    try:
+        _distribute_shorts('tiktok')
+    except Exception as e:
+        logger.error(f"TikTok 배포 오류: {e}")
+
+
+def job_distribute_youtube():
+    """20:00 — YouTube 쇼츠 업로드"""
+    if not _publish_enabled:
+        return
+    logger.info("[스케줄] YouTube 쇼츠 업로드")
+    try:
+        _distribute_shorts('youtube')
+    except Exception as e:
+        logger.error(f"YouTube 배포 오류: {e}")
+
+
+def _distribute_shorts(platform: str):
+    """틱톡/유튜브 쇼츠 MP4 배포 공통 로직"""
+    sys.path.insert(0, str(BASE_DIR / 'bots' / 'distributors'))
+    if platform == 'tiktok':
+        import tiktok_bot as dist_bot
+    else:
+        import youtube_bot as dist_bot
+
+    today = datetime.now().strftime('%Y%m%d')
+    outputs_dir = DATA_DIR / 'outputs'
+    for shorts_file in sorted(outputs_dir.glob(f'{today}_*_shorts.mp4')):
+        done_flag = shorts_file.with_suffix(f'.{platform}_done')
+        if done_flag.exists():
+            continue
+        slug = shorts_file.stem.replace(f'{today}_', '').replace('_shorts', '')
+        article = _load_article_by_slug(today, slug)
+        if not article:
+            logger.warning(f"{platform}: 원본 article 없음 ({slug})")
+            continue
+        success = dist_bot.publish_shorts(article, str(shorts_file))
+        if success:
+            done_flag.touch()
+
+
+def _load_article_by_slug(date_str: str, slug: str) -> dict:
+    """날짜+slug로 원본 article 로드"""
+    originals_dir = DATA_DIR / 'originals'
+    for f in originals_dir.glob(f'{date_str}_*{slug}*.json'):
+        try:
+            return json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    return {}
 
 
 def _publish_next():
@@ -127,14 +356,12 @@ def _publish_next():
             if article.get('_pending_openclaw'):
                 continue
             sys.path.insert(0, str(BASE_DIR / 'bots'))
+            sys.path.insert(0, str(BASE_DIR / 'bots' / 'converters'))
             import publisher_bot
-            import linker_bot
-            import markdown as md_lib
-            body_html = md_lib.markdown(
-                article.get('body', ''), extensions=['toc', 'tables', 'fenced_code']
-            )
-            body_html = linker_bot.process(article, body_html)
-            article['body'] = body_html
+            import blog_converter
+            # 변환봇으로 HTML 생성 (이미 변환된 경우 outputs에서 읽음)
+            html = blog_converter.convert(article, save_file=False)
+            article['_html_content'] = html
             article['_body_is_html'] = True
             publisher_bot.publish(article)
             draft_file.unlink(missing_ok=True)
@@ -269,6 +496,26 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sys.path.insert(0, str(BASE_DIR / 'bots'))
     import analytics_bot
     analytics_bot.weekly_report()
+
+
+async def cmd_convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """수동 변환 실행"""
+    await update.message.reply_text("변환 엔진 실행 중...")
+    try:
+        _run_conversion_pipeline()
+        outputs_dir = DATA_DIR / 'outputs'
+        today = datetime.now().strftime('%Y%m%d')
+        blogs = len(list(outputs_dir.glob(f'{today}_*_blog.html')))
+        cards = len(list(outputs_dir.glob(f'{today}_*_card.png')))
+        threads = len(list(outputs_dir.glob(f'{today}_*_thread.json')))
+        await update.message.reply_text(
+            f"변환 완료\n"
+            f"블로그 HTML: {blogs}개\n"
+            f"인스타 카드: {cards}개\n"
+            f"X 스레드: {threads}개"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"변환 오류: {e}")
 
 
 # ─── 이미지 관련 명령 (request 모드) ────────────────
@@ -438,6 +685,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    chat_id = update.message.chat_id
+
     cmd_map = {
         '발행 중단': cmd_stop_publish,
         '발행 재개': cmd_resume_publish,
@@ -445,26 +694,45 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '이번 주 리포트': cmd_report,
         '대기 중인 글 보여줘': cmd_pending,
         '이미지 목록': cmd_images,
+        '변환 실행': cmd_convert,
+        '오늘 뭐 발행했어?': cmd_status,
     }
     if text in cmd_map:
         await cmd_map[text](update, context)
-    else:
+        return
+
+    # Claude API로 자연어 처리
+    if not ANTHROPIC_API_KEY:
         await update.message.reply_text(
-            "사용 가능한 명령:\n"
-            "• 발행 중단 / 발행 재개\n"
-            "• 오늘 수집된 글감 보여줘\n"
-            "• 대기 중인 글 보여줘\n"
-            "• 이번 주 리포트\n"
-            "• 이미지 목록\n\n"
-            "슬래시 명령:\n"
-            "/approve [번호] — 글 승인\n"
-            "/reject [번호] — 글 거부\n"
-            "/images — 이미지 제작 현황\n"
-            "/imgpick [번호] — 프롬프트 선택\n"
-            "/imgbatch — 프롬프트 배치 전송\n"
-            "/imgcancel — 이미지 대기 취소\n"
-            "/status — 봇 상태"
+            "Claude API 키가 없습니다. .env 파일에 ANTHROPIC_API_KEY를 입력하세요."
         )
+        return
+
+    global _claude_client
+    if _claude_client is None:
+        _claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    history = _conversation_history.setdefault(chat_id, [])
+    history.append({"role": "user", "content": text})
+
+    # 대화 기록이 너무 길면 최근 20개만 유지
+    if len(history) > 20:
+        history[:] = history[-20:]
+
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        response = _claude_client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=1024,
+            system=CLAUDE_SYSTEM_PROMPT,
+            messages=history,
+        )
+        reply = response.content[0].text
+        history.append({"role": "assistant", "content": reply})
+        await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"Claude API 오류: {e}")
+        await update.message.reply_text(f"오류가 발생했습니다: {e}")
 
 
 # ─── 스케줄러 설정 + 메인 ─────────────────────────────
@@ -473,6 +741,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone='Asia/Seoul')
     schedule_cfg = load_schedule()
 
+    # schedule.json 기반 동적 잡 (기존)
     job_map = {
         'collector': job_collector,
         'ai_writer': job_ai_writer,
@@ -486,9 +755,24 @@ def setup_scheduler() -> AsyncIOScheduler:
         if fn:
             scheduler.add_job(fn, 'cron', hour=job['hour'], minute=job['minute'], id=job['id'])
 
-    # 고정 스케줄
+    # v3 고정 스케줄: 시차 배포
+    # 07:00 수집봇 (schedule.json에서 관리)
+    # 08:00 AI 글 작성 (schedule.json에서 관리)
+    scheduler.add_job(job_convert, 'cron', hour=8, minute=30, id='convert')       # 08:30 변환
+    scheduler.add_job(lambda: job_publish(1), 'cron',
+                      hour=9, minute=0, id='blog_publish')                         # 09:00 블로그
+    scheduler.add_job(job_distribute_instagram, 'cron',
+                      hour=10, minute=0, id='instagram_dist')                      # 10:00 인스타
+    scheduler.add_job(job_distribute_x, 'cron',
+                      hour=11, minute=0, id='x_dist')                             # 11:00 X
+    scheduler.add_job(job_distribute_tiktok, 'cron',
+                      hour=18, minute=0, id='tiktok_dist')                         # 18:00 틱톡
+    scheduler.add_job(job_distribute_youtube, 'cron',
+                      hour=20, minute=0, id='youtube_dist')                        # 20:00 유튜브
+    scheduler.add_job(job_analytics_daily, 'cron',
+                      hour=22, minute=0, id='daily_report')                        # 22:00 분석
     scheduler.add_job(job_analytics_weekly, 'cron',
-                      day_of_week='sun', hour=22, minute=30, id='weekly_report')
+                      day_of_week='sun', hour=22, minute=30, id='weekly_report')   # 일요일 주간
 
     # request 모드: 매주 월요일 10:00 이미지 프롬프트 배치 전송
     if IMAGE_MODE == 'request':
@@ -496,7 +780,7 @@ def setup_scheduler() -> AsyncIOScheduler:
                           day_of_week='mon', hour=10, minute=0, id='image_batch')
         logger.info("이미지 request 모드: 매주 월요일 10:00 배치 전송 등록")
 
-    logger.info("스케줄러 설정 완료")
+    logger.info("스케줄러 설정 완료 (v3 시차 배포 포함)")
     return scheduler
 
 
@@ -515,6 +799,7 @@ async def main():
         app.add_handler(CommandHandler('pending', cmd_pending))
         app.add_handler(CommandHandler('report', cmd_report))
         app.add_handler(CommandHandler('topics', cmd_show_topics))
+        app.add_handler(CommandHandler('convert', cmd_convert))
 
         # 이미지 관련 (request / manual 공통 사용 가능)
         app.add_handler(CommandHandler('images', cmd_images))

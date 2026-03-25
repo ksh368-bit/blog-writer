@@ -1,0 +1,517 @@
+================================================================================
+  The 4th Path — 쇼츠 영상 템플릿 설계서
+  News Anchor Format · DALL-E + Google TTS + ffmpeg
+================================================================================
+
+  용도: Claude Code에서 shorts_converter.py 구현 시 참조
+  연관: 마스터플랜 v3, converters/shorts_converter.py
+
+
+================================================================================
+  1. 영상 기본 사양
+================================================================================
+
+  포맷:     MP4 (H.264 + AAC)
+  비율:     9:16 세로 (1080×1920)
+  길이:     30~60초
+  FPS:      30
+  음성:     Google Cloud TTS (WaveNet, ko-KR)
+  자막:     SRT burn-in (단어별 하이라이트)
+  배경음악: YouTube Audio Library (무료, 별도 다운로드)
+  전환효과: ffmpeg xfade (fade, slideleft, dissolve)
+
+
+================================================================================
+  2. 영상 구조 (타임라인)
+================================================================================
+
+  ┌─────────────────────────────────────────────┐
+  │  [0:00 ~ 0:02]  INTRO                       │
+  │                                              │
+  │  ┌──────────────────────────────────────┐   │
+  │  │  ┌─────────────────────────┐        │   │
+  │  │  │   The 4th Path          │ LOGO   │   │
+  │  │  └─────────────────────────┘        │   │
+  │  │                                      │   │
+  │  │  Independent Tech Media              │   │
+  │  │  by 22B Labs                         │   │
+  │  │                                      │   │
+  │  │  배경: 다크(#0a0a0d) + 골드 라인    │   │
+  │  │  사운드: 짧은 뉴스 인트로 효과      │   │
+  │  └──────────────────────────────────────┘   │
+  │                                              │
+  │  전환: fade (0.5초)                         │
+  ├─────────────────────────────────────────────┤
+  │  [0:02 ~ 0:06]  HEADLINE SLIDE              │
+  │                                              │
+  │  ┌──────────────────────────────────────┐   │
+  │  │  ┌───────────────┐                   │   │
+  │  │  │ 🟢 쉬운 세상  │ eyebrow badge    │   │
+  │  │  └───────────────┘                   │   │
+  │  │                                      │   │
+  │  │  "글 제목이 여기에"                  │   │
+  │  │   큰 글씨, 2~3줄 이내              │   │
+  │  │                                      │   │
+  │  │  ───────────────────────            │   │
+  │  │  2026.03.25 · 22B Labs              │   │
+  │  │                                      │   │
+  │  │  배경: DALL-E 이미지 (블러 처리)    │   │
+  │  │  오버레이: 반투명 다크 그라데이션   │   │
+  │  └──────────────────────────────────────┘   │
+  │                                              │
+  │  음성: "오늘은 [제목 요약]에 대해         │
+  │         알아보겠습니다."                    │
+  │  전환: slideleft (0.5초)                    │
+  ├─────────────────────────────────────────────┤
+  │  [0:06 ~ 0:14]  POINT 1 SLIDE               │
+  │                                              │
+  │  ┌──────────────────────────────────────┐   │
+  │  │                                      │   │
+  │  │     ① 핵심 포인트 첫 번째           │   │
+  │  │                                      │   │
+  │  │  설명 텍스트 2~3줄                  │   │
+  │  │  (읽기 편한 크기)                   │   │
+  │  │                                      │   │
+  │  │  ──────────────────────── ticker    │   │
+  │  │  The 4th Path · 쉬운 세상 · 날짜   │   │
+  │  │                                      │   │
+  │  │  배경: DALL-E 이미지 또는 단색      │   │
+  │  └──────────────────────────────────────┘   │
+  │                                              │
+  │  음성: 핵심 포인트 1 설명 (8초 분량)       │
+  │  자막: 단어별 하이라이트                    │
+  │  전환: fade (0.5초)                         │
+  ├─────────────────────────────────────────────┤
+  │  [0:14 ~ 0:22]  POINT 2 SLIDE               │
+  │  (구조 동일, 색상 미세 변화)                │
+  ├─────────────────────────────────────────────┤
+  │  [0:22 ~ 0:30]  POINT 3 SLIDE               │
+  │  (구조 동일)                                │
+  ├─────────────────────────────────────────────┤
+  │  [0:30 ~ 0:35]  DATA CARD (선택적)          │
+  │                                              │
+  │  ┌──────────────────────────────────────┐   │
+  │  │                                      │   │
+  │  │     ┌────────┐  ┌────────┐          │   │
+  │  │     │  86%   │  │  $2.5T │          │   │
+  │  │     │ AI도입 │  │ AI투자 │          │   │
+  │  │     └────────┘  └────────┘          │   │
+  │  │                                      │   │
+  │  │  출처: NVIDIA 2026 Report           │   │
+  │  │                                      │   │
+  │  │  배경: 다크 (#0f0a1e)              │   │
+  │  └──────────────────────────────────────┘   │
+  │                                              │
+  │  음성: 데이터 설명 (5초)                    │
+  │  전환: dissolve (0.5초)                     │
+  ├─────────────────────────────────────────────┤
+  │  [0:35 ~ 0:40]  OUTRO                       │
+  │                                              │
+  │  ┌──────────────────────────────────────┐   │
+  │  │                                      │   │
+  │  │  "더 자세한 내용은"                 │   │
+  │  │                                      │   │
+  │  │  ┌─────────────────────────┐        │   │
+  │  │  │  the4thpath.com         │        │   │
+  │  │  └─────────────────────────┘        │   │
+  │  │                                      │   │
+  │  │  The 4th Path                       │   │
+  │  │  Independent Tech Media             │   │
+  │  │                                      │   │
+  │  │  "팔로우하면 매일 이런 정보를"      │   │
+  │  │                                      │   │
+  │  │  배경: 다크(#0a0a0d) + 골드 액센트 │   │
+  │  └──────────────────────────────────────┘   │
+  │                                              │
+  │  음성: "자세한 내용은 the4thpath.com에서   │
+  │         확인하세요. 팔로우 부탁드립니다."  │
+  │  사운드: 짧은 아웃트로 효과                 │
+  └─────────────────────────────────────────────┘
+
+
+================================================================================
+  3. 슬라이드 이미지 생성 파이프라인
+================================================================================
+
+  각 슬라이드는 2단계로 생성:
+  (A) DALL-E로 배경 이미지 생성
+  (B) Pillow로 UI 오버레이 합성
+
+  ── (A) DALL-E 배경 이미지 ──────────────────────
+
+  프롬프트 템플릿 (코너별):
+
+  [쉬운 세상]
+  "Minimalist abstract background, soft purple gradient,
+   subtle tech grid pattern, clean, modern, editorial.
+   Vertical 9:16 aspect ratio, no text, no people."
+
+  [숨은 보물]
+  "Minimalist abstract background, deep blue with
+   golden light accents, treasure map subtle texture,
+   clean editorial. Vertical 9:16, no text."
+
+  [바이브 리포트]
+  "Minimalist abstract background, warm coral and
+   white, creative energy waves, modern editorial.
+   Vertical 9:16, no text."
+
+  [팩트체크]
+  "Minimalist abstract background, dark red and white,
+   data visualization grid subtle texture, serious
+   editorial. Vertical 9:16, no text."
+
+  [한 컷]
+  → 만평 이미지를 직접 사용 (DALL-E 불필요)
+
+  출력: 1080×1920 PNG
+  주의: "no text" 필수 (DALL-E 텍스트 렌더링 불안정)
+
+  ── (B) Pillow UI 오버레이 합성 ─────────────────
+
+  DALL-E 이미지 위에 다음 요소를 합성:
+
+  [인트로/아웃트로 슬라이드]
+  - 배경: 단색 다크 (#0a0a0d)
+  - 로고: assets/logo.png (중앙 상단)
+  - 텍스트: "Independent Tech Media" (골드 #c8a84e)
+  - 하단: "by 22B Labs"
+
+  [헤드라인 슬라이드]
+  - 배경: DALL-E 이미지 + 하단 50% 다크 그라데이션 오버레이
+  - 상단: 코너 배지 (Pillow로 그린 둥근 사각형 + 텍스트)
+  - 중앙: 제목 텍스트 (흰색, 굵게, 최대 3줄)
+  - 하단: 날짜 · 22B Labs (작은 글씨)
+
+  [포인트 슬라이드]
+  - 배경: DALL-E 이미지 (밝기 40%로 어둡게)
+  - 좌상단: 번호 원형 배지 (①②③)
+  - 중앙: 핵심 포인트 텍스트 (흰색, 2~3줄)
+  - 하단 바: 뉴스 티커 (배경 #000, 텍스트 #c8a84e)
+    "The 4th Path · [코너명] · [날짜]"
+
+  [데이터 카드 슬라이드]
+  - 배경: 단색 다크 (#0f0a1e)
+  - 중앙: 수치 카드 2~3개 (박스 + 큰 숫자 + 라벨)
+  - 하단: 출처 텍스트 (작은 글씨)
+
+  폰트:
+  - 제목: Noto Sans KR Bold (assets/fonts/NotoSansKR-Bold.ttf)
+  - 본문: Noto Sans KR Regular
+  - 숫자: Noto Sans KR Black
+  - 크기: 제목 72px, 본문 48px, 메타 32px, 티커 28px
+
+
+================================================================================
+  4. 음성(TTS) 파이프라인
+================================================================================
+
+  ── Google Cloud TTS 설정 ───────────────────────
+
+  API: texttospeech.googleapis.com
+  인증: Google Cloud 서비스 계정 또는 OAuth
+
+  음성 파라미터:
+    language_code: "ko-KR"
+    name: "ko-KR-Wavenet-A" (여성) 또는 "ko-KR-Wavenet-C" (남성)
+    speaking_rate: 1.05 (약간 빠르게 — 쇼츠 시청 패턴)
+    pitch: 0 (기본)
+    audio_encoding: LINEAR16 (WAV)
+
+  영문 글의 경우:
+    language_code: "en-US"
+    name: "en-US-Wavenet-D" (남성) 또는 "en-US-Wavenet-F" (여성)
+
+  ── TTS 스크립트 생성 규칙 ──────────────────────
+
+  원본 마크다운의 ---KEY_POINTS--- 섹션에서 추출.
+
+  스크립트 구조:
+    [INTRO] "오늘은 {제목 요약}에 대해 알아보겠습니다."
+    [POINT1] "{핵심 포인트 1 설명, 2~3문장}"
+    [POINT2] "{핵심 포인트 2 설명, 2~3문장}"
+    [POINT3] "{핵심 포인트 3 설명, 2~3문장}"
+    [DATA]   "{데이터 설명, 1~2문장}" (선택적)
+    [OUTRO]  "자세한 내용은 the4thpath.com에서 확인하세요.
+              팔로우 부탁드립니다."
+
+  각 섹션을 개별 WAV 파일로 생성:
+    tts_intro.wav, tts_p1.wav, tts_p2.wav, tts_p3.wav,
+    tts_data.wav (선택), tts_outro.wav
+
+  ── TTS 비용 추정 ──────────────────────────────
+
+  WaveNet 가격: $16 / 100만 문자
+  1개 쇼츠 스크립트: ~500자 = $0.008
+  하루 2~3개: ~$0.02
+  월 60~90개: ~$0.60
+  $300 크레딧으로: 약 500개월 분량 (실질적 무제한)
+
+  ── 크레딧 소진 후 대안 ─────────────────────────
+
+  옵션 1: gTTS (완전 무료, 품질 하락)
+  옵션 2: OpenAI TTS API (품질 유지, 비용 발생)
+  옵션 3: ElevenLabs 무료 티어 (월 10분, 품질 최고)
+
+  권장: 크레딧 소진 시점에 수익 상황 보고 결정
+
+
+================================================================================
+  5. ffmpeg 파이프라인
+================================================================================
+
+  ── 전체 흐름 ───────────────────────────────────
+
+  입력:
+    slide_intro.png    (1080×1920)
+    slide_headline.png (1080×1920)
+    slide_p1.png       (1080×1920)
+    slide_p2.png       (1080×1920)
+    slide_p3.png       (1080×1920)
+    slide_data.png     (1080×1920, 선택)
+    slide_outro.png    (1080×1920)
+    tts_intro.wav
+    tts_p1.wav
+    tts_p2.wav
+    tts_p3.wav
+    tts_data.wav       (선택)
+    tts_outro.wav
+    bgm.mp3            (배경음악, 볼륨 10%)
+    subtitles.srt
+
+  출력:
+    {date}_{slug}_shorts.mp4
+
+  ── Step 1: 슬라이드 → 개별 영상 클립 ──────────
+
+  각 슬라이드를 해당 TTS 길이에 맞춰 영상으로:
+
+  ffmpeg -loop 1 -i slide_p1.png -i tts_p1.wav \
+    -c:v libx264 -tune stillimage -c:a aac \
+    -b:a 192k -pix_fmt yuv420p \
+    -vf "scale=1080:1920,zoompan=z='min(zoom+0.0005,1.08)':
+         x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':
+         d=1:s=1080x1920:fps=30" \
+    -shortest clip_p1.mp4
+
+  zoompan: 느린 줌인 (Ken Burns) → 정적 슬라이드에 생동감
+
+  ── Step 2: 클립 결합 + 전환 효과 ──────────────
+
+  ffmpeg \
+    -i clip_intro.mp4 \
+    -i clip_headline.mp4 \
+    -i clip_p1.mp4 \
+    -i clip_p2.mp4 \
+    -i clip_p3.mp4 \
+    -i clip_outro.mp4 \
+    -filter_complex \
+    "[0][1]xfade=transition=fade:duration=0.5:offset=1.5[f0]; \
+     [f0][2]xfade=transition=slideleft:duration=0.5:offset=5.5[f1]; \
+     [f1][3]xfade=transition=fade:duration=0.5:offset=13.5[f2]; \
+     [f2][4]xfade=transition=fade:duration=0.5:offset=21.5[f3]; \
+     [f3][5]xfade=transition=dissolve:duration=0.5:offset=29.5[video]; \
+     [0:a][1:a][2:a][3:a][4:a][5:a]concat=n=6:v=0:a=1[audio]" \
+    -map "[video]" -map "[audio]" \
+    -c:v libx264 -c:a aac \
+    temp_no_bgm.mp4
+
+  참고: offset 값은 각 TTS 길이에 따라 동적으로 계산해야 함.
+  offset = 이전 클립 총 길이 - 전환 duration
+
+  ── Step 3: 배경음악 믹스 ──────────────────────
+
+  ffmpeg -i temp_no_bgm.mp4 -i bgm.mp3 \
+    -filter_complex "[1:a]volume=0.08[bgm]; \
+                     [0:a][bgm]amix=inputs=2:duration=first[a]" \
+    -map 0:v -map "[a]" -c:v copy -c:a aac \
+    -shortest temp_with_bgm.mp4
+
+  배경음악 볼륨: 8% (TTS 음성이 명확하게 들려야 함)
+
+  ── Step 4: 자막 burn-in ───────────────────────
+
+  ffmpeg -i temp_with_bgm.mp4 -vf \
+    "subtitles=subtitles.srt:force_style='\
+     FontName=Noto Sans KR,\
+     FontSize=22,\
+     PrimaryColour=&H00FFFFFF,\
+     OutlineColour=&H80000000,\
+     BorderStyle=4,\
+     BackColour=&H80000000,\
+     Outline=0,\
+     Shadow=0,\
+     MarginV=120,\
+     Alignment=2,\
+     Bold=1'" \
+    -c:v libx264 -c:a copy \
+    output_final.mp4
+
+  자막 위치: 하단 120px 위 (티커 바 위)
+  스타일: 흰색 글씨 + 반투명 검정 배경 박스
+
+  ── Step 5: 정리 ───────────────────────────────
+
+  임시 파일 삭제:
+    clip_*.mp4, temp_*.mp4, tts_*.wav, slide_*.png
+  최종 파일만 유지:
+    data/outputs/{date}_{slug}_shorts.mp4
+
+
+================================================================================
+  6. SRT 자막 생성
+================================================================================
+
+  TTS 스크립트에서 자동 생성.
+  각 TTS WAV 파일의 길이를 ffprobe로 측정 → 타이밍 계산.
+
+  방법 1 (간단): 문장 단위 자막
+    1
+    00:00:02,000 --> 00:00:06,000
+    오늘은 ChatGPT 숨겨진 기능에 대해
+    알아보겠습니다.
+
+  방법 2 (고급): 단어별 하이라이트
+    Google TTS의 timepoint 응답을 활용하여
+    단어별 시작/끝 시간을 추출.
+    ASS 자막 포맷으로 단어별 색상 변경 적용.
+
+  권장: Phase 1은 문장 단위로 시작.
+        Phase 2에서 단어별 하이라이트 추가.
+
+
+================================================================================
+  7. 코너별 영상 스타일 변화
+================================================================================
+
+  [쉬운 세상] Easy Guide
+  배경: 보라 그라데이션
+  톤: 친절, 차분
+  TTS 속도: 1.0 (약간 느리게)
+  전환: fade (부드러운)
+
+  [숨은 보물] Hidden Gems
+  배경: 딥블루 + 골드
+  톤: 발견의 흥분
+  TTS 속도: 1.05
+  전환: slideleft
+
+  [바이브 리포트] Vibe Report
+  배경: 코랄 + 화이트
+  톤: 에너지, 감탄
+  TTS 속도: 1.1 (빠르게)
+  전환: slideleft
+
+  [팩트체크] Fact Check
+  배경: 다크레드 + 화이트
+  톤: 진지, 분석적
+  TTS 속도: 1.0
+  전환: fade (무거운)
+  추가: 데이터 카드 슬라이드 필수
+
+  [한 컷] One Cut
+  배경: 만평 이미지 직접 사용
+  톤: 위트, 짧은 해설
+  TTS 속도: 1.0
+  길이: 15~20초 (짧게)
+  구조: 만평 이미지 → 해설 1줄 → 아웃트로
+
+
+================================================================================
+  8. 파일 구조
+================================================================================
+
+  shorts_converter.py 내부 구조:
+
+  class ShortsConverter:
+      def __init__(self, config):
+          """설정 로드 (templates/shorts_template.json)"""
+
+      def generate(self, original_md_path, output_dir):
+          """메인 파이프라인"""
+          content = self.parse_markdown(original_md_path)
+          script = self.generate_tts_script(content)
+          audio_files = self.synthesize_tts(script)
+          bg_image = self.generate_background(content)
+          slides = self.compose_slides(content, bg_image)
+          subtitles = self.generate_srt(script, audio_files)
+          video = self.assemble_video(slides, audio_files, subtitles)
+          return video
+
+      def parse_markdown(self, path):
+          """원본 마크다운에서 제목/코너/KEY_POINTS 추출"""
+
+      def generate_tts_script(self, content):
+          """KEY_POINTS → TTS 스크립트 생성"""
+
+      def synthesize_tts(self, script):
+          """Google Cloud TTS API 호출 → WAV 파일들"""
+
+      def generate_background(self, content):
+          """DALL-E API 호출 → 배경 이미지 생성"""
+
+      def compose_slides(self, content, bg_image):
+          """Pillow: 배경 + UI 오버레이 합성 → PNG 슬라이드들"""
+
+      def generate_srt(self, script, audio_files):
+          """WAV 길이 측정 → SRT 자막 파일 생성"""
+
+      def assemble_video(self, slides, audio_files, subtitles):
+          """ffmpeg: 슬라이드 + 오디오 + 자막 + 전환 → MP4"""
+
+  필요 라이브러리:
+    Pillow                     (이미지 합성)
+    google-cloud-texttospeech  (TTS)
+    openai                     (DALL-E API, 또는 ChatGPT Pro 경유)
+    ffmpeg-python 또는 subprocess  (ffmpeg 호출)
+    pydub                      (오디오 길이 측정)
+
+  templates/shorts_template.json:
+    {
+      "resolution": [1080, 1920],
+      "fps": 30,
+      "transition_duration": 0.5,
+      "bgm_volume": 0.08,
+      "tts_voice_ko": "ko-KR-Wavenet-A",
+      "tts_voice_en": "en-US-Wavenet-D",
+      "tts_speaking_rate": 1.05,
+      "font_title": "assets/fonts/NotoSansKR-Bold.ttf",
+      "font_body": "assets/fonts/NotoSansKR-Regular.ttf",
+      "font_title_size": 72,
+      "font_body_size": 48,
+      "font_meta_size": 32,
+      "font_ticker_size": 28,
+      "brand_color": "#c8a84e",
+      "dark_bg": "#0a0a0d",
+      "ticker_text": "The 4th Path · {corner} · {date}",
+      "outro_url": "the4thpath.com",
+      "outro_cta": "팔로우하면 매일 이런 정보를 받습니다",
+      "corners": {
+        "쉬운세상": {"color": "#7c3aed", "bg_prompt_style": "purple gradient, tech grid"},
+        "숨은보물": {"color": "#1d6fb0", "bg_prompt_style": "deep blue, golden light"},
+        "바이브리포트": {"color": "#d85a30", "bg_prompt_style": "warm coral, energy waves"},
+        "팩트체크": {"color": "#bf3a3a", "bg_prompt_style": "dark red, data grid"},
+        "한컷": {"color": "#8a7a2e", "bg_prompt_style": null}
+      }
+    }
+
+
+================================================================================
+  9. 마스터플랜 v3 반영 사항
+================================================================================
+
+  이 설계서의 내용을 마스터플랜 v3의 다음 섹션에 반영:
+
+  - PART 2, 섹션 6 (변환 엔진 상세) → [변환 3] 쇼츠 영상
+  - PART 5, 섹션 13 → Phase 2A 세팅 항목
+  - PART 6, 섹션 14 → 일일 자동 플로우
+
+  영상 퀄리티 원칙 (마스터플랜에 추가):
+  "카드+TTS 대량생산이 아닌, CNN/Bloomberg 스타일의
+   뉴스 앵커 포맷으로 양질의 쇼츠를 제작한다.
+   자극적 클릭베이트보다 장기 구독자 확보를 우선한다."
+
+
+================================================================================
+  끝
+================================================================================

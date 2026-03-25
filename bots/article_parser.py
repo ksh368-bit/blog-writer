@@ -44,6 +44,15 @@ def parse_output(raw_output: str) -> Optional[dict]:
     coupang_raw = sections.get('COUPANG_KEYWORDS', '')
     coupang_keywords = [k.strip() for k in coupang_raw.split(',') if k.strip()]
 
+    # KEY_POINTS 파싱 (변환 엔진용 핵심 3줄)
+    key_points_raw = sections.get('KEY_POINTS', '')
+    key_points = []
+    for line in key_points_raw.splitlines():
+        line = line.strip().lstrip('•-*').strip()
+        if line:
+            key_points.append(line)
+    key_points = key_points[:3]  # 최대 3개
+
     return {
         'title': sections.get('TITLE', ''),
         'meta': sections.get('META', ''),
@@ -52,6 +61,7 @@ def parse_output(raw_output: str) -> Optional[dict]:
         'corner': sections.get('CORNER', ''),
         'body': sections.get('BODY', ''),
         'coupang_keywords': coupang_keywords,
+        'key_points': key_points,
         'sources': sources,
         'disclaimer': sections.get('DISCLAIMER', ''),
     }

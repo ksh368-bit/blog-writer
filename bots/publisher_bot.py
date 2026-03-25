@@ -340,14 +340,14 @@ def publish(article: dict) -> bool:
         send_pending_review_alert(article, review_reason)
         return False
 
-    # 마크다운 → HTML
-    body_html, toc_html = markdown_to_html(article.get('body', ''))
-
-    # AdSense 플레이스홀더
-    body_html = insert_adsense_placeholders(body_html)
-
-    # 최종 HTML 조합
-    full_html = build_full_html(article, body_html, toc_html)
+    # 변환봇이 미리 생성한 HTML이 있으면 재사용, 없으면 직접 변환
+    if article.get('_html_content'):
+        full_html = article['_html_content']
+    else:
+        # 마크다운 → HTML (fallback)
+        body_html, toc_html = markdown_to_html(article.get('body', ''))
+        body_html = insert_adsense_placeholders(body_html)
+        full_html = build_full_html(article, body_html, toc_html)
 
     # Google 인증
     try:

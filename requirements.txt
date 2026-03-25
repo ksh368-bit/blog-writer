@@ -8,5 +8,15 @@ requests
 beautifulsoup4
 feedparser
 markdown
-python-telegram-bot==20.7
+python-telegram-bot>=21.0
 lxml
+anthropic
+Pillow
+requests-oauthlib
+claude-agent-sdk
+# Phase 2 (쇼츠 변환)
+gTTS
+openai
+pydub
+# Phase 2 (YouTube 업로드 진행 표시)
+google-resumable-media
