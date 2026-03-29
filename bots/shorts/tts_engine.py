@@ -25,6 +25,111 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+# ─── SmartTTSRouter ───────────────────────────────────────────
+
+class SmartTTSRouter:
+    """
+    Budget-aware TTS engine selection with graceful fallback.
+
+    Engine priority order (best to cheapest):
+    1. elevenlabs   — best quality, paid
+    2. openai_tts   — good quality, paid (uses existing OpenAI key)
+    3. cosyvoice2   — local, free, Korean native speaker voice
+    4. kokoro       — local, free, 82M params
+    5. edge_tts     — free fallback, always available
+    """
+
+    ENGINE_PRIORITY = ['elevenlabs', 'openai_tts', 'cosyvoice2', 'kokoro', 'edge_tts']
+
+    # Daily/monthly usage limits per engine
+    ENGINE_LIMITS = {
+        'elevenlabs': {'chars_per_month': 10000, 'threshold': 0.8},
+        'openai_tts': {'chars_per_day': 500000, 'threshold': 0.9},
+    }
+
+    ENGINE_API_KEYS = {
+        'elevenlabs': 'ELEVENLABS_API_KEY',
+        'openai_tts': 'OPENAI_API_KEY',
+    }
+    # cosyvoice2, kokoro, edge_tts are local — no API key needed
+
+    def __init__(self, resolved_config: dict):
+        """
+        resolved_config: output from ConfigResolver.resolve()
+        """
+        self.budget = resolved_config.get('budget', 'free')
+        self.tts_engine = resolved_config.get('tts', 'edge_tts')
+        self._usage = {}  # {engine_name: chars_used_today}
+        self._failed = set()  # engines that failed this session
+
+    def select(self, text_length: int) -> str:
+        """
+        Select best available TTS engine for given text length.
+
+        1. If user specified a non-auto engine: use it if available
+        2. Else: check budget-appropriate engines in priority order
+        3. Skip engines that have exceeded usage threshold
+        4. Skip engines that failed this session
+        5. Always fall back to edge_tts
+        """
+        import os
+
+        # If user explicitly chose a specific engine (not 'auto')
+        if self.tts_engine not in ('auto', 'edge_tts', ''):
+            engine = self.tts_engine
+            api_key_env = self.ENGINE_API_KEYS.get(engine, '')
+            if not api_key_env or os.environ.get(api_key_env, ''):
+                if engine not in self._failed:
+                    return engine
+
+        # Budget-based priority selection
+        if self.budget == 'free':
+            priority = ['kokoro', 'edge_tts']
+        elif self.budget == 'low':
+            priority = ['openai_tts', 'kokoro', 'edge_tts']
+        else:  # medium, premium
+            priority = self.ENGINE_PRIORITY
+
+        for engine in priority:
+            if engine in self._failed:
+                continue
+            api_key_env = self.ENGINE_API_KEYS.get(engine, '')
+            if api_key_env and not os.environ.get(api_key_env, ''):
+                continue  # no API key
+            if self._is_over_limit(engine, text_length):
+                continue
+            return engine
+
+        return 'edge_tts'  # always available
+
+    def on_failure(self, engine: str, error: str) -> str:
+        """
+        Record engine failure and return next available engine.
+        No retry on same engine — no wasted credits.
+        """
+        import logging
+        logging.getLogger(__name__).warning(f'TTS 엔진 실패: {engine} — {error}, 다음 엔진으로 전환')
+        self._failed.add(engine)
+        return self.select(0)  # Select next engine
+
+    def record_usage(self, engine: str, char_count: int) -> None:
+        """Record character usage for an engine."""
+        self._usage[engine] = self._usage.get(engine, 0) + char_count
+
+    def _is_over_limit(self, engine: str, text_length: int) -> bool:
+        """Check if engine has exceeded its usage threshold."""
+        limits = self.ENGINE_LIMITS.get(engine, {})
+        if not limits:
+            return False
+        threshold = limits.get('threshold', 0.9)
+        daily_limit = limits.get('chars_per_day', limits.get('chars_per_month', 0))
+        if not daily_limit:
+            return False
+        used = self._usage.get(engine, 0)
+        return (used + text_length) / daily_limit > threshold
+
+
 # ─── 공통 유틸 ────────────────────────────────────────────────
 
 
@@ -165,6 +270,47 @@ def _get_ffmpeg() -> str:
     if ffmpeg_env and Path(ffmpeg_env).exists():
         return ffmpeg_env
     return 'ffmpeg'
+
+
+# ─── OpenAI TTS ───────────────────────────────────────────────
+
+def _tts_openai(text: str, output_path: Path, cfg: dict) -> list[dict]:
+    """
+    OpenAI TTS (tts-1-hd model) with timestamp estimation.
+    Returns: [{word, start, end}, ...] — uniform timestamps (no word-level from OpenAI)
+    """
+    import requests, base64
+    import os
+
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key:
+        raise RuntimeError('OPENAI_API_KEY not set')
+
+    openai_cfg = cfg.get('tts', {}).get('openai', {})
+    model = openai_cfg.get('model', 'tts-1-hd')
+    voice = openai_cfg.get('voice', 'alloy')
+    speed = openai_cfg.get('speed', 1.0)
+
+    url = 'https://api.openai.com/v1/audio/speech'
+    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+    payload = {
+        'model': model,
+        'input': text,
+        'voice': voice,
+        'speed': speed,
+        'response_format': 'mp3',
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+
+    mp3_tmp = output_path.with_suffix('.mp3')
+    mp3_tmp.write_bytes(resp.content)
+    _mp3_to_wav(mp3_tmp, output_path)
+    mp3_tmp.unlink(missing_ok=True)
+
+    # OpenAI TTS has no word-level timestamps — use uniform distribution
+    return []  # caption_renderer will use uniform fallback
 
 
 # ─── Google Cloud TTS ─────────────────────────────────────────
@@ -323,11 +469,21 @@ def generate_tts(
     ts_path = output_dir / f'{timestamp}_timestamps.json'
 
     text = _concat_script(script)
-    pause_ms = cfg.get('tts', {}).get('inter_sentence_pause_ms', 300)
-    priority = cfg.get('tts', {}).get('engine_priority', ['elevenlabs', 'google_cloud', 'edge_tts'])
 
+    # Apply Korean preprocessing if available
+    try:
+        from bots.prompt_layer.korean_preprocessor import preprocess_korean
+        text = preprocess_korean(text)
+    except ImportError:
+        pass  # Korean preprocessing not available, use raw text
+
+    pause_ms = cfg.get('tts', {}).get('inter_sentence_pause_ms', 300)
+    priority = cfg.get('tts', {}).get('engine_priority', ['elevenlabs', 'openai_tts', 'google_cloud', 'edge_tts'])
+
+    # Engine map: elevenlabs → openai_tts → google_cloud → edge_tts
     engine_map = {
         'elevenlabs':   _tts_elevenlabs,
+        'openai_tts':   _tts_openai,
         'google_cloud': _tts_google_cloud,
         'edge_tts':     _tts_edge,
     }
