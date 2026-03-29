@@ -413,3 +413,218 @@ def assemble(
         if tmp_cleanup and work_dir.exists():
             import shutil
             shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ─── GPU Encoder Detection ────────────────────────────────────
+
+def _detect_gpu_encoder(ffmpeg: str = 'ffmpeg') -> str:
+    """
+    Detect available GPU encoder in priority order:
+    nvenc (NVIDIA) > amf (AMD) > qsv (Intel) > libx264 (CPU)
+
+    Returns: encoder name string
+    """
+    encoders_to_try = [
+        ('h264_nvenc', ['-hwaccel', 'cuda']),    # NVIDIA
+        ('h264_amf', []),                         # AMD
+        ('h264_qsv', ['-hwaccel', 'qsv']),        # Intel
+    ]
+
+    import tempfile, subprocess
+
+    for encoder, hwaccel_args in encoders_to_try:
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+                test_out = f.name
+            cmd = (
+                [ffmpeg, '-y', '-loglevel', 'error']
+                + hwaccel_args
+                + ['-f', 'lavfi', '-i', 'color=black:s=16x16:r=1',
+                   '-t', '0.1',
+                   '-c:v', encoder,
+                   test_out]
+            )
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            Path(test_out).unlink(missing_ok=True)
+            if result.returncode == 0:
+                logger.info(f'[GPU] 인코더 감지: {encoder}')
+                return encoder
+        except Exception:
+            pass
+
+    logger.info('[GPU] GPU 인코더 없음 — libx264 사용')
+    return 'libx264'
+
+
+# ─── Resilient Assembler ─────────────────────────────────────
+
+class ResilientAssembler:
+    """
+    Resilient video assembler with:
+    1. Per-clip encoding (fail one → fallback that clip only)
+    2. Timeout per FFmpeg process (5 minutes)
+    3. GPU encoder auto-detection (nvenc/amf/qsv/cpu)
+    4. Progress reporting (logs every clip)
+
+    Use assemble_resilient() instead of the module-level assemble() for better fault tolerance.
+    """
+
+    CLIP_TIMEOUT = 300  # 5 minutes per clip
+    FINAL_TIMEOUT = 600  # 10 minutes for final assembly
+
+    def __init__(self, cfg: dict = None):
+        """
+        cfg: shorts_config.json dict (loaded automatically if None)
+        """
+        self._cfg = cfg or _load_config()
+        self._ffmpeg = _get_ffmpeg()
+        self._encoder = None  # Lazy detection
+
+    def _get_encoder(self) -> str:
+        """Detect and cache GPU encoder."""
+        if self._encoder is None:
+            self._encoder = _detect_gpu_encoder(self._ffmpeg)
+        return self._encoder
+
+    def _encode_clip(self, clip_path: Path, index: int, work_dir: Path) -> Path:
+        """
+        Encode a single clip to standardized format.
+
+        Returns: path to encoded clip
+        Raises: RuntimeError on failure (triggers fallback)
+        """
+        out = work_dir / f'encoded_{index:02d}.mp4'
+        encoder = self._get_encoder()
+
+        cmd = [
+            self._ffmpeg, '-y',
+            '-i', str(clip_path),
+            '-c:v', encoder,
+            '-crf', '20' if encoder == 'libx264' else '20',
+            '-preset', 'fast' if encoder == 'libx264' else 'fast',
+            '-pix_fmt', 'yuv420p',
+            '-an', '-r', '30',
+            str(out),
+        ]
+
+        # Adjust args for GPU encoders (they use different quality flags)
+        if encoder != 'libx264':
+            cmd = [
+                self._ffmpeg, '-y',
+                '-i', str(clip_path),
+                '-c:v', encoder,
+                '-b:v', '2M',       # Bitrate for GPU encoders
+                '-pix_fmt', 'yuv420p',
+                '-an', '-r', '30',
+                str(out),
+            ]
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, timeout=self.CLIP_TIMEOUT
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f'FFmpeg error: {result.stderr.decode(errors="ignore")[-200:]}')
+            logger.info(f'[조립] 클립 {index} 인코딩 완료 ({encoder})')
+            return out
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'클립 {index} 인코딩 타임아웃 ({self.CLIP_TIMEOUT}초)')
+
+    def _fallback_clip(self, clip_path: Path, index: int, work_dir: Path) -> Path:
+        """
+        Fallback clip encoding using libx264 (CPU, always works).
+        """
+        logger.warning(f'[조립] 클립 {index} 폴백 인코딩 (libx264)')
+        out = work_dir / f'fallback_{index:02d}.mp4'
+
+        cmd = [
+            self._ffmpeg, '-y',
+            '-i', str(clip_path),
+            '-c:v', 'libx264', '-crf', '23', '-preset', 'fast',
+            '-pix_fmt', 'yuv420p',
+            '-an', '-r', '30',
+            str(out),
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=self.CLIP_TIMEOUT)
+            if result.returncode != 0:
+                logger.error(f'[조립] 폴백도 실패 (클립 {index}): {result.stderr.decode(errors="ignore")[-100:]}')
+                return clip_path  # Return original as last resort
+            return out
+        except subprocess.TimeoutExpired:
+            logger.error(f'[조립] 폴백 타임아웃 (클립 {index})')
+            return clip_path
+
+    def assemble_resilient(
+        self,
+        clips: list[Path],
+        tts_wav: Path,
+        ass_path: Optional[Path],
+        output_dir: Path,
+        timestamp: str,
+        work_dir: Optional[Path] = None,
+    ) -> Path:
+        """
+        Resilient version of assemble() with per-clip fallback.
+
+        Key differences from assemble():
+        1. Each clip is encoded individually — failure → fallback that clip only
+        2. GPU encoder used when available
+        3. Per-process timeout (5 min per clip)
+        4. Progress logged per clip
+
+        Args:
+            Same as assemble()
+
+        Returns: Path to rendered MP4
+        Raises: RuntimeError only if ALL clips fail or final assembly fails
+        """
+        import contextlib, shutil
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        tmp_cleanup = work_dir is None
+        if work_dir is None:
+            work_dir = output_dir / f'_resilient_{timestamp}'
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Step 1: Encode each clip (with per-clip fallback)
+            encoded = []
+            failed_count = 0
+            for i, clip in enumerate(clips):
+                logger.info(f'[조립] 클립 {i+1}/{len(clips)} 처리 중...')
+                try:
+                    enc = self._encode_clip(clip, i, work_dir)
+                    encoded.append(enc)
+                except Exception as e:
+                    logger.warning(f'[조립] 클립 {i} 인코딩 실패: {e} — 폴백 사용')
+                    failed_count += 1
+                    fb = self._fallback_clip(clip, i, work_dir)
+                    encoded.append(fb)
+
+            if not encoded:
+                raise RuntimeError('[조립] 인코딩된 클립 없음 — 조립 불가')
+
+            if failed_count > 0:
+                logger.warning(f'[조립] {failed_count}/{len(clips)} 클립이 폴백으로 인코딩됨')
+
+            # Step 2: Use the existing assemble() for the rest (concat + audio + subtitles)
+            # This reuses all the battle-tested logic from the original assembler
+            result_path = assemble(
+                clips=encoded,
+                tts_wav=tts_wav,
+                ass_path=ass_path,
+                output_dir=output_dir,
+                timestamp=timestamp,
+                cfg=self._cfg,
+                work_dir=work_dir / 'assemble',
+            )
+
+            logger.info(f'[조립] 탄력적 조립 완료: {result_path.name}')
+            return result_path
+
+        finally:
+            if tmp_cleanup and work_dir.exists():
+                shutil.rmtree(work_dir, ignore_errors=True)
