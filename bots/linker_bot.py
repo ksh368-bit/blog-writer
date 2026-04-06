@@ -211,7 +211,13 @@ def add_disclaimer(html_content: str, disclaimer_text: str) -> str:
 # ─── 내부 링크 ───────────────────────────────────────
 
 DATA_DIR = BASE_DIR / 'data'
-_STOP_WORDS = {'있다', '없다', '하다', '되다', '이다', '같다', '보다', '이', '그', '저', '이것', '그것', '저것'}
+_STOP_WORDS = {
+    '있다', '없다', '하다', '되다', '이다', '같다', '보다',
+    '이', '그', '저', '이것', '그것', '저것',
+    # 주제와 무관한 일반 명사
+    '기초', '가이드', '방법', '소개', '이해', '정리', '완벽', '총정리',
+    '입문', '튜토리얼', '사용법', '활용법', '알아보기', '살펴보기',
+}
 
 
 def _load_published_index() -> list[dict]:
@@ -259,13 +265,13 @@ def insert_internal_links(html_content: str, article: dict, max_links: int = 3) 
     soup = BeautifulSoup(html_content, 'html.parser')
     plain_body = soup.get_text()
 
-    # 관련도 점수 계산 (현재 글 제외)
+    # 관련도 점수 계산 (현재 글 제외, 최소 임계값 0.25 이상만 포함)
     scored = []
     for rec in published:
         if rec['title'] == current_title:
             continue
         score = _score_relevance(rec['title'], rec['tags'], current_title, plain_body)
-        if score > 0:
+        if score >= 0.25:
             scored.append((score, rec))
     scored.sort(key=lambda x: -x[0])
     top_related = [rec for _, rec in scored[:max_links]]
