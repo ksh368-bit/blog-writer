@@ -17,8 +17,8 @@
     "enabled": false,
     "publish_time": "11:00",
     "api": "X API v2",
-    "env_keys": ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"],
-    "setup_notes": "X Developer 계정 + 앱 등록 필요"
+    "env_keys": ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET", "X_BEARER_TOKEN"],
+    "setup_notes": "게시에는 OAuth1, 수집에는 Bearer Token 필요"
   },
   "tiktok": {
     "enabled": false,
@@ -29,7 +29,7 @@
     "setup_notes": "TikTok Developer 계정 + 앱 등록 필요"
   },
   "youtube": {
-    "enabled": false,
+    "enabled": true,
     "publish_time": "20:00",
     "api": "YouTube Data API v3",
     "env_keys": ["YOUTUBE_CHANNEL_ID"],

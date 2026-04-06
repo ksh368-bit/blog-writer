@@ -4,7 +4,10 @@
     "비트코인", "이더리움", "암호화폐", "가상화폐"
   ],
   "criticism_keywords": [
-    "고소", "피해", "논란", "비리", "내부고발", "고발"
+    "고소", "논란", "비리", "내부고발", "고발"
+  ],
+  "criticism_phrases": [
+    "피해자", "피해 보상", "피해 주장", "피해를 입었다", "집단소송", "손해배상"
   ],
   "investment_keywords": [
     "수익 보장", "확실한 수익", "반드시 오른다", "무조건", "투자 권유"
@@ -13,6 +16,6 @@
     "불법", "위법", "처벌", "벌금", "징역", "기소"
   ],
   "always_manual_review": ["팩트체크"],
-  "min_sources_required": 2,
+  "min_sources_required": 1,
   "min_quality_score_for_auto": 75
 }

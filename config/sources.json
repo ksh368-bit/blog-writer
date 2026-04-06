@@ -23,17 +23,60 @@
       "url": "https://www.bloter.net/feed",
       "category": "tech",
       "trust_level": "high"
+    },
+    {
+      "name": "Maeil Economy",
+      "url": "https://www.mk.co.kr/rss/30100041/",
+      "category": "finance",
+      "trust_level": "high"
+    },
+    {
+      "name": "Investing Korea",
+      "url": "https://kr.investing.com/rss/news.rss",
+      "category": "finance",
+      "trust_level": "medium"
+    },
+    {
+      "name": "Yonhap Economy",
+      "url": "https://www.yna.co.kr/rss/economy.xml",
+      "category": "finance",
+      "trust_level": "high"
+    },
+    {
+      "name": "Infomax",
+      "url": "https://news.einfomax.co.kr/rss/allArticle.xml",
+      "category": "finance",
+      "trust_level": "medium"
     }
   ],
-  "x_keywords": [
-    "바이브코딩",
-    "vibe coding",
-    "AI 자동화",
-    "Claude 사용",
-    "ChatGPT 활용",
-    "비개발자 앱",
-    "노코드 AI"
-  ],
+  "x_search": {
+    "enabled": false,
+    "keywords": [
+      "바이브코딩",
+      "vibe coding",
+      "AI 자동화",
+      "Claude 사용",
+      "ChatGPT 활용",
+      "비개발자 앱",
+      "노코드 AI"
+    ],
+    "lang": "ko",
+    "max_results": 10,
+    "sort_order": "relevancy",
+    "exclude_replies": true
+  },
+  "youtube_trending": {
+    "region": "KR",
+    "category_id": "28",
+    "max_results": 20,
+    "api_key_env": "YOUTUBE_API_KEY"
+  },
+  "reddit": {
+    "enabled": false,
+    "subreddits": ["technology", "programming", "korea", "LocalLLaMA", "ChatGPT"],
+    "time_filter": "day",
+    "limit": 25
+  },
   "github_trending": {
     "url": "https://github.com/trending",
     "languages": ["", "python", "javascript"],

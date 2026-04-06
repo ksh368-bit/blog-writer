@@ -12,12 +12,18 @@ def parse_output(raw_output: str) -> Optional[dict]:
     OpenClaw 출력 문자열을 파싱.
     Returns: dict 또는 None (파싱 실패 시)
     """
+    normalized = raw_output.replace('\r\n', '\n').replace('\r', '\n').strip()
+    if normalized.startswith('```'):
+        normalized = re.sub(r'^```[a-zA-Z0-9_-]*\n', '', normalized)
+        normalized = re.sub(r'\n```$', '', normalized).strip()
+
     sections = {}
-    pattern = re.compile(r'---(\w+)---\n(.*?)(?=---\w+---|$)', re.DOTALL)
-    matches = pattern.findall(raw_output)
+    # 대소문자 무관, 섹션 구분자 뒤 개행 없어도 경계 인식
+    pattern = re.compile(r'^\s*---\s*([A-Z_]+)\s*---\s*\n(.*?)(?=^\s*---\s*[A-Z_]+\s*---\s*\n?|\Z)', re.DOTALL | re.MULTILINE | re.IGNORECASE)
+    matches = pattern.findall(normalized)
 
     for key, value in matches:
-        sections[key.strip()] = value.strip()
+        sections[key.strip().upper()] = value.strip()
 
     if not sections.get('TITLE') or not sections.get('BODY'):
         return None
@@ -29,9 +35,16 @@ def parse_output(raw_output: str) -> Optional[dict]:
         line = line.strip()
         if not line:
             continue
+        # 섹션 구분자가 SOURCES 내부로 흘러들어온 경우 방어 (예: ---DISCLAIMER---)
+        if line.startswith('---'):
+            continue
         parts = [p.strip() for p in line.split('|')]
+        url = parts[0] if len(parts) > 0 else ''
+        # http/https 로 시작하지 않으면 유효한 URL이 아님
+        if not url.startswith(('http://', 'https://')):
+            continue
         sources.append({
-            'url': parts[0] if len(parts) > 0 else '',
+            'url': url,
             'title': parts[1] if len(parts) > 1 else '',
             'date': parts[2] if len(parts) > 2 else '',
         })

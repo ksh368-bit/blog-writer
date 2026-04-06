@@ -1,10 +1,14 @@
 {
-  "_comment": "The 4th Path 블로그 자동 수익 엔진 — 엔진 설정 (v3)",
-  "_updated": "2026-03-29",
+  "_comment": "The Day 블로그 자동 수익 엔진 — 엔진 설정 (v3)",
+  "_updated": "2026-03-26",
   "writing": {
     "provider": "openclaw",
     "_comment_provider": "openclaw=ChatGPT Pro(OAuth), claude_web=Claude Max(웹쿠키), gemini_web=Gemini Pro(웹쿠키), claude=Anthropic API키, gemini=Google AI API키",
     "options": {
+      "claude_code": {
+        "timeout": 180,
+        "model": "claude-haiku-4-5"
+      },
       "openclaw": {
         "agent_name": "blog-writer",
         "timeout": 300
@@ -171,6 +175,20 @@
     "novel": {
       "enabled": false,
       "comment": "노벨피아 연재 — 추후 활성화"
+    }
+  },
+  "reviewing": {
+    "provider": "openclaw",
+    "_comment": "검수 엔진: 글쓰기(Haiku)와 분리해 Sonnet으로 검수 품질 유지",
+    "options": {
+      "claude_code": {
+        "timeout": 240,
+        "model": "claude-sonnet-4-6"
+      },
+      "openclaw": {
+        "agent_name": "blog-writer",
+        "timeout": 300
+      }
     }
   },
   "quality_gates": {

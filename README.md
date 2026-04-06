@@ -150,9 +150,13 @@ scripts\setup.bat
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_REFRESH_TOKEN=   # get_token.py 실행 후 자동 입력
+YOUTUBE_API_KEY=        # YouTube 트렌드 수집용
+X_BEARER_TOKEN=         # X 자료 수집용 (Recent Search)
 BLOG_MAIN_ID=           # Blogger 블로그 ID (18자리 숫자)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+X_SOURCE_ENABLED=false       # X 수집 기본 비활성
+REDDIT_SOURCE_ENABLED=false  # Reddit 승인 전 기본 비활성
 ```
 
 보안 팁: .env 파일을 프로젝트 폴더 외부(예: D:\key\)에 두고

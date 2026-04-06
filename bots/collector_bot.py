@@ -10,7 +10,9 @@ import re
 import hashlib
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import feedparser
 import requests
@@ -48,6 +50,13 @@ CORNER_TYPES = {
 TOPIC_RATIO = {'evergreen': 0.5, 'trending': 0.3, 'personality': 0.2}
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def load_config(filename: str) -> dict:
     with open(CONFIG_DIR / filename, 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -78,20 +87,40 @@ def is_duplicate(title: str, published_titles: list[str], threshold: float = 0.8
     return False
 
 
-def calc_freshness_score(published_at: datetime | None, max_score: int = 20) -> int:
-    """발행 시간 기준 신선도 점수 (24h 이내 만점, 7일 초과 0점)"""
+def parse_datetime(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except Exception:
+            return None
+    return None
+
+
+def calc_freshness_score(published_at: datetime | None, rules: dict) -> int:
+    """발행 시간 기준 신선도 점수"""
+    freshness_cfg = rules['scoring']['freshness']
+    max_score = freshness_cfg['max']
+    full_score_hours = freshness_cfg.get('hours_full_score', 24)
+    zero_score_hours = freshness_cfg.get('hours_zero_score', 168)
+    missing_date_score = freshness_cfg.get('missing_date_score', 0)
+
     if published_at is None:
-        return max_score // 2
+        return missing_date_score
     now = datetime.now(timezone.utc)
     if published_at.tzinfo is None:
         published_at = published_at.replace(tzinfo=timezone.utc)
     age_hours = (now - published_at).total_seconds() / 3600
-    if age_hours <= 24:
+    age_hours = max(age_hours, 0)
+    if age_hours <= full_score_hours:
         return max_score
-    elif age_hours >= 168:
+    elif age_hours >= zero_score_hours:
         return 0
     else:
-        ratio = 1 - (age_hours - 24) / (168 - 24)
+        ratio = 1 - (age_hours - full_score_hours) / max((zero_score_hours - full_score_hours), 1)
         return int(max_score * ratio)
 
 
@@ -122,12 +151,21 @@ def calc_source_trust(source_url: str, rules: dict) -> tuple[int, str]:
     trust_cfg = rules['scoring']['source_trust']
     high_src = trust_cfg.get('high_sources', [])
     low_src = trust_cfg.get('low_sources', [])
+    unknown_score = trust_cfg['levels'].get('unknown', 0)
+    if not source_url:
+        return unknown_score, 'unknown'
+
+    parsed = urlparse(source_url if '://' in source_url else f'https://{source_url}')
+    host = (parsed.netloc or '').lower()
+    if not host:
+        return unknown_score, 'unknown'
+
     url_lower = source_url.lower()
     for s in low_src:
-        if s in url_lower:
+        if s in url_lower or s in host:
             return trust_cfg['levels']['low'], 'low'
     for s in high_src:
-        if s in url_lower:
+        if s in url_lower or s in host:
             return trust_cfg['levels']['high'], 'high'
     return trust_cfg['levels']['medium'], 'medium'
 
@@ -137,6 +175,75 @@ def calc_monetization(text: str, rules: dict) -> int:
     keywords = rules['scoring']['monetization']['keywords']
     matched = sum(1 for kw in keywords if kw in text)
     return min(matched * 5, rules['scoring']['monetization']['max'])
+
+
+def calc_topic_fit(text: str, rules: dict) -> int:
+    """핵심 주제군 적합도 점수"""
+    cfg = rules['scoring'].get('topic_fit', {})
+    keywords = cfg.get('keywords', [])
+    if not keywords:
+        return 0
+
+    text_lower = text.lower()
+    matched = sum(1 for kw in keywords if kw.lower() in text_lower)
+    return min(matched * 5, cfg.get('max', 0))
+
+
+def calc_negative_topic_fit(text: str, rules: dict) -> int:
+    """비핵심 주제 감점"""
+    cfg = rules['scoring'].get('negative_topic_fit', {})
+    keywords = cfg.get('keywords', [])
+    if not keywords:
+        return 0
+
+    text_lower = text.lower()
+    matched = sum(1 for kw in keywords if kw.lower() in text_lower)
+    return min(matched * 5, cfg.get('max', 0))
+
+
+def calc_novelty_score(item: dict, rules: dict) -> int:
+    """글감 자체가 새롭게 느껴지는 정도"""
+    cfg = rules['scoring'].get('novelty', {})
+    text = f"{item.get('topic', '')} {item.get('description', '')}".lower()
+    score = 0
+
+    for kw in cfg.get('keywords', []):
+        if kw.lower() in text:
+            score += 3
+
+    topic = item.get('topic', '')
+    if re.search(r'\d', text):
+        score += 2
+    if any(mark in topic for mark in [':', '—', '→']):
+        score += 1
+    if item.get('reference_views', 0) or item.get('reference_score', 0):
+        score += 1
+
+    return min(score, cfg.get('max', 0))
+
+
+def calc_impact_score(item: dict, rules: dict) -> int:
+    """글감 제목/설명만 읽어도 감각적 인상이 오는 정도"""
+    cfg = rules['scoring'].get('impact', {})
+    topic = item.get('topic', '')
+    description = item.get('description', '')
+    text = f"{topic} {description}".lower()
+    score = 0
+
+    for kw in cfg.get('keywords', []):
+        if kw.lower() in text:
+            score += 3
+
+    if re.search(r'[!?]', topic):
+        score += 2
+    if any(mark in topic for mark in ['달', '우주', '폭격', '책임', '경계', '자립']):
+        score += 2
+    if any(mark in description for mark in ['손으로', '바느질', '직접', '현실', '장면', '압도적']):
+        score += 2
+    if len(topic) >= 18:
+        score += 1
+
+    return min(score, cfg.get('max', 0))
 
 
 def is_evergreen(title: str, rules: dict) -> bool:
@@ -195,19 +302,29 @@ def apply_discard_rules(item: dict, rules: dict, published_titles: list[str]) ->
             if any(p in text for p in patterns):
                 return '클릭베이트성 주제'
 
+        elif rule_id == 'lacks_novelty_and_impact':
+            max_novelty = rule.get('max_novelty_score', 5)
+            max_impact = rule.get('max_impact_score', 5)
+            if item.get('novelty_score', 0) <= max_novelty and item.get('impact_score', 0) <= max_impact:
+                return '새로움과 임팩트가 모두 약함'
+
     return None
 
 
 def assign_corner(item: dict, topic_type: str) -> str:
     """글감에 코너 배정"""
     title = item.get('topic', '').lower()
+    text = f"{item.get('topic', '')} {item.get('description', '')}".lower()
     source = item.get('source', 'rss').lower()
+    philosophy_kws = ['윤리', '도덕', '철학', '가치관', '삶', '태도', '시각', '관점', '책임', '인간']
 
     if topic_type == 'evergreen':
         if any(kw in title for kw in ['가이드', '방법', '사용법', '입문', '튜토리얼', '기초']):
             return '쉬운세상'
         return '숨은보물'
     elif topic_type == 'trending':
+        if any(kw in text for kw in philosophy_kws):
+            return '바이브리포트'
         if source in ['github', 'product_hunt']:
             return '숨은보물'
         return '쉬운세상'
@@ -220,15 +337,10 @@ def calculate_quality_score(item: dict, rules: dict) -> int:
     text = item.get('topic', '') + ' ' + item.get('description', '')
     source_url = item.get('source_url', '')
     pub_at_str = item.get('published_at')
-    pub_at = None
-    if pub_at_str:
-        try:
-            pub_at = datetime.fromisoformat(pub_at_str)
-        except Exception:
-            pass
+    pub_at = parse_datetime(pub_at_str)
 
     kr_score = calc_korean_relevance(text, rules)
-    fresh_score = calc_freshness_score(pub_at)
+    fresh_score = calc_freshness_score(pub_at, rules)
     # search_demand: pytrends 연동 후 실제값 사용 (RSS 기본값 12)
     search_score = item.get('search_demand_score', 12)
     # 신뢰도: _trust_override 이미 설정된 경우 우선 사용
@@ -238,33 +350,96 @@ def calculate_quality_score(item: dict, rules: dict) -> int:
     else:
         trust_score, trust_level = calc_source_trust(source_url, rules)
     mono_score = calc_monetization(text, rules)
+    topic_fit_score = calc_topic_fit(text, rules)
+    negative_topic_fit_score = calc_negative_topic_fit(text, rules)
+    novelty_score = calc_novelty_score(item, rules)
+    impact_score = calc_impact_score(item, rules)
 
     item['korean_relevance_score'] = kr_score
     item['source_trust_level'] = trust_level
     item['is_evergreen'] = is_evergreen(item.get('topic', ''), rules)
+    item['topic_fit_score'] = topic_fit_score
+    item['negative_topic_fit_score'] = negative_topic_fit_score
+    item['novelty_score'] = novelty_score
+    item['impact_score'] = impact_score
 
-    total = kr_score + fresh_score + search_score + trust_score + mono_score
+    total = (
+        kr_score + fresh_score + search_score + trust_score + mono_score
+        + topic_fit_score + novelty_score + impact_score - negative_topic_fit_score
+    )
     return min(total, 100)
 
 
 # ─── 수집 소스별 함수 ─────────────────────────────────
 
+def _parse_google_trends_traffic(value: str) -> int:
+    text = (value or '').strip().replace(',', '')
+    match = re.match(r'(\d+)([천만]?)\+?', text)
+    if not match:
+        return 0
+
+    number = int(match.group(1))
+    unit = match.group(2)
+    if unit == '천':
+        number *= 1_000
+    elif unit == '만':
+        number *= 10_000
+    return number
+
+
 def collect_google_trends() -> list[dict]:
-    """Google Trends (pytrends) — 한국 일간 트렌딩"""
+    """Google Trends RSS — 한국 실시간 인기 검색어"""
     items = []
     try:
-        from pytrends.request import TrendReq
-        pytrends = TrendReq(hl='ko', tz=540, timeout=(10, 30))
-        trending_df = pytrends.trending_searches(pn='south_korea')
-        for keyword in trending_df[0].tolist()[:20]:
+        url = 'https://trends.google.com/trending/rss?geo=KR'
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7',
+            'Referer': 'https://trends.google.com/trending?geo=KR&hl=ko',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.text)
+
+        for entry in feed.entries[:20]:
+            keyword = entry.get('title', '').strip()
+            if not keyword:
+                continue
+
+            approx_traffic = entry.get('ht_approx_traffic', '')
+            traffic_value = _parse_google_trends_traffic(approx_traffic)
+            if traffic_value >= 50_000:
+                search_score = 20
+            elif traffic_value >= 10_000:
+                search_score = 17
+            elif traffic_value >= 5_000:
+                search_score = 14
+            elif traffic_value >= 1_000:
+                search_score = 11
+            else:
+                search_score = 8
+
+            news_title = entry.get('ht_news_item_title', '')
+            news_snippet = entry.get('ht_news_item_snippet', '')
+            news_source = entry.get('ht_news_item_source', '')
+            description_parts = [part for part in [approx_traffic, news_title, news_snippet, news_source] if part]
+            published_at = None
+            if entry.get('published'):
+                pub_dt = parsedate_to_datetime(entry.get('published'))
+                published_at = pub_dt.astimezone(timezone.utc).isoformat() if pub_dt else None
+
             items.append({
                 'topic': keyword,
-                'description': f'Google Trends 한국 트렌딩 키워드: {keyword}',
+                'description': ' | '.join(description_parts)[:300] or f'Google Trends 한국 트렌딩 키워드: {keyword}',
                 'source': 'google_trends',
-                'source_url': f'https://trends.google.co.kr/trends/explore?q={keyword}&geo=KR',
-                'published_at': datetime.now(timezone.utc).isoformat(),
-                'search_demand_score': 15,
+                'source_url': f'https://trends.google.com/trending?geo=KR&hl=ko',
+                'published_at': published_at,
+                'search_demand_score': search_score,
                 'topic_type': 'trending',
+                'reference_title': news_title or keyword,
+                'reference_source': news_source,
+                'reference_traffic': approx_traffic,
             })
     except Exception as e:
         logger.warning(f"Google Trends 수집 실패: {e}")
@@ -395,6 +570,254 @@ def collect_rss_feeds(sources_cfg: dict) -> list[dict]:
     return items
 
 
+def collect_youtube_trending(sources_cfg: dict, rules: dict) -> list[dict]:
+    """YouTube Data API v3 — 한국 인기 동영상 (Science & Technology 카테고리)"""
+    items = []
+    cfg = sources_cfg.get('youtube_trending', {})
+    api_key = os.getenv(cfg.get('api_key_env', 'YOUTUBE_API_KEY'), '')
+    if not api_key:
+        logger.warning("YOUTUBE_API_KEY 없음 — YouTube Trending 수집 건너뜀")
+        return items
+
+    region = cfg.get('region', 'KR')
+    category_id = cfg.get('category_id', '28')
+    max_results = cfg.get('max_results', 20)
+    min_views = rules.get('engagement_filters', {}).get('youtube_min_views', 50000)
+
+    try:
+        url = 'https://www.googleapis.com/youtube/v3/videos'
+        params = {
+            'part': 'snippet,statistics',
+            'chart': 'mostPopular',
+            'regionCode': region,
+            'videoCategoryId': category_id,
+            'maxResults': max_results,
+            'key': api_key,
+        }
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        for video in data.get('items', []):
+            stats = video.get('statistics', {})
+            snippet = video.get('snippet', {})
+            view_count = int(stats.get('viewCount', 0))
+            like_count = int(stats.get('likeCount', 0))
+
+            if view_count < min_views:
+                continue
+
+            if view_count >= 5_000_000:
+                search_score = 20
+            elif view_count >= 500_000:
+                search_score = 15
+            elif view_count >= 100_000:
+                search_score = 10
+            else:
+                search_score = 5
+
+            video_id = video.get('id', '')
+            pub_at = snippet.get('publishedAt', '')
+            items.append({
+                'topic': snippet.get('title', ''),
+                'description': snippet.get('description', '')[:300],
+                'source': 'youtube',
+                'source_url': f'https://www.youtube.com/watch?v={video_id}',
+                'published_at': pub_at,
+                'search_demand_score': search_score,
+                'topic_type': 'trending',
+                'reference_title': snippet.get('title', ''),
+                'reference_views': view_count,
+                'reference_likes': like_count,
+            })
+    except Exception as e:
+        logger.warning(f"YouTube Trending 수집 실패: {e}")
+    return items
+
+
+def collect_x_trending(sources_cfg: dict, rules: dict) -> list[dict]:
+    """X API v2 Recent Search — 키워드 기반 최근 포스트 수집"""
+    items = []
+    cfg = sources_cfg.get('x_search', {})
+    enabled = env_flag('X_SOURCE_ENABLED', cfg.get('enabled', False))
+    if not enabled:
+        logger.info("X 수집 비활성화됨 — sources.json 또는 X_SOURCE_ENABLED로 활성화 가능")
+        return items
+
+    bearer_token = os.getenv('X_BEARER_TOKEN', '')
+    if not bearer_token:
+        logger.warning("X_BEARER_TOKEN 없음 — X 수집 건너뜀")
+        return items
+
+    keywords = cfg.get('keywords') or sources_cfg.get('x_keywords', [])
+    if not keywords:
+        return items
+
+    max_results = min(max(int(cfg.get('max_results', 10)), 10), 100)
+    lang = cfg.get('lang', 'ko')
+    sort_order = cfg.get('sort_order', 'relevancy')
+    exclude_replies = cfg.get('exclude_replies', True)
+    eng = rules.get('engagement_filters', {})
+    min_likes = int(cfg.get('min_like_count', eng.get('x_min_like_count', 50)))
+    min_retweets = int(cfg.get('min_retweet_count', eng.get('x_min_retweet_count', 10)))
+    min_replies = int(cfg.get('min_reply_count', eng.get('x_min_reply_count', 3)))
+
+    headers = {
+        'Authorization': f'Bearer {bearer_token}',
+        'User-Agent': 'blog-writer/1.0',
+    }
+    seen_ids = set()
+
+    for keyword in keywords:
+        query_parts = [f'"{keyword}"']
+        if lang:
+            query_parts.append(f'lang:{lang}')
+        query_parts.append('-is:retweet')
+        if exclude_replies:
+            query_parts.append('-is:reply')
+
+        params = {
+            'query': ' '.join(query_parts),
+            'max_results': max_results,
+            'sort_order': sort_order,
+            'tweet.fields': 'created_at,public_metrics,lang',
+        }
+
+        try:
+            resp = requests.get(
+                'https://api.x.com/2/tweets/search/recent',
+                headers=headers,
+                params=params,
+                timeout=15,
+            )
+            if resp.status_code == 402:
+                try:
+                    error_data = resp.json()
+                except Exception:
+                    error_data = {}
+                if error_data.get('title') == 'CreditsDepleted':
+                    logger.warning(
+                        "X 수집 중단 — 현재 계정의 X API 크레딧이 소진됨. "
+                        "console.x.com 에서 크레딧 충전 후 재시도 필요"
+                    )
+                    return items
+            resp.raise_for_status()
+            data = resp.json()
+
+            for tweet in data.get('data', []):
+                tweet_id = tweet.get('id', '')
+                if not tweet_id or tweet_id in seen_ids:
+                    continue
+
+                metrics = tweet.get('public_metrics', {})
+                like_count = int(metrics.get('like_count', 0))
+                retweet_count = int(metrics.get('retweet_count', 0))
+                reply_count = int(metrics.get('reply_count', 0))
+                quote_count = int(metrics.get('quote_count', 0))
+
+                if (
+                    like_count < min_likes
+                    and retweet_count < min_retweets
+                    and reply_count < min_replies
+                ):
+                    continue
+
+                engagement = like_count + (retweet_count * 3) + (reply_count * 2) + (quote_count * 2)
+                if engagement >= 5000:
+                    search_score = 18
+                elif engagement >= 1000:
+                    search_score = 15
+                elif engagement >= 300:
+                    search_score = 12
+                else:
+                    search_score = 9
+
+                text = re.sub(r'\s+', ' ', tweet.get('text', '')).strip()
+                items.append({
+                    'topic': text[:120],
+                    'description': text[:300],
+                    'source': 'x',
+                    'source_url': f'https://x.com/i/web/status/{tweet_id}',
+                    'published_at': tweet.get('created_at', ''),
+                    'search_demand_score': search_score,
+                    'topic_type': 'trending',
+                    'reference_title': text[:120],
+                    'reference_likes': like_count,
+                    'reference_retweets': retweet_count,
+                    'reference_replies': reply_count,
+                    'related_keywords': [keyword],
+                })
+                seen_ids.add(tweet_id)
+        except Exception as e:
+            logger.warning(f"X 수집 실패 ({keyword}): {e}")
+    return items
+
+
+def collect_reddit_trending(sources_cfg: dict, rules: dict) -> list[dict]:
+    """Reddit PRAW — 인기 서브레딧 상위 글 (score + upvote_ratio 필터)"""
+    items = []
+    cfg = sources_cfg.get('reddit', {})
+    enabled = env_flag('REDDIT_SOURCE_ENABLED', cfg.get('enabled', False))
+    if not enabled:
+        logger.info("Reddit 수집 비활성화됨 — sources.json 또는 REDDIT_SOURCE_ENABLED로 활성화 가능")
+        return items
+
+    client_id = os.getenv('REDDIT_CLIENT_ID', '')
+    client_secret = os.getenv('REDDIT_CLIENT_SECRET', '')
+    if not client_id or not client_secret:
+        logger.warning("REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET 없음 — Reddit 수집 건너뜀")
+        return items
+
+    subreddits = cfg.get('subreddits', ['technology', 'programming', 'LocalLLaMA', 'ChatGPT'])
+    time_filter = cfg.get('time_filter', 'day')
+    limit = cfg.get('limit', 25)
+    eng = rules.get('engagement_filters', {})
+    min_score = eng.get('reddit_min_score', 300)
+    min_ratio = eng.get('reddit_min_upvote_ratio', 0.85)
+
+    try:
+        import praw
+        reddit = praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent='blog-writer/1.0',
+        )
+        for sub_name in subreddits:
+            try:
+                sub = reddit.subreddit(sub_name)
+                for post in sub.top(time_filter=time_filter, limit=limit):
+                    if post.score < min_score or post.upvote_ratio < min_ratio:
+                        continue
+
+                    if post.score >= 10_000:
+                        search_score = 20
+                    elif post.score >= 1_000:
+                        search_score = 15
+                    else:
+                        search_score = 10
+
+                    pub_at = datetime.fromtimestamp(post.created_utc, tz=timezone.utc).isoformat()
+                    items.append({
+                        'topic': post.title,
+                        'description': (post.selftext or post.url)[:300],
+                        'source': 'reddit',
+                        'source_url': f'https://reddit.com{post.permalink}',
+                        'published_at': pub_at,
+                        'search_demand_score': search_score,
+                        'topic_type': 'trending',
+                        'reference_title': post.title,
+                        'reference_score': post.score,
+                        'reference_comments': post.num_comments,
+                    })
+            except Exception as e:
+                logger.warning(f"Reddit r/{sub_name} 수집 실패: {e}")
+    except ImportError:
+        logger.warning("praw 미설치 — Reddit 수집 건너뜀 (pip install praw)")
+    except Exception as e:
+        logger.warning(f"Reddit 수집 실패: {e}")
+    return items
+
+
 def extract_coupang_keywords(topic: str, description: str) -> list[str]:
     """글감에서 쿠팡 검색 키워드 추출"""
     product_keywords = [
@@ -437,6 +860,11 @@ def run():
     sources_cfg = load_config('sources.json')
     published_titles = load_published_titles()
     min_score = rules.get('min_score', 70)
+    duplicate_rule = next(
+        (rule for rule in rules.get('discard_rules', []) if rule.get('id') == 'duplicate_topic'),
+        {}
+    )
+    duplicate_threshold = duplicate_rule.get('similarity_threshold', 0.8)
 
     # 수집
     all_items = []
@@ -445,10 +873,14 @@ def run():
     all_items += collect_product_hunt(sources_cfg)
     all_items += collect_hacker_news(sources_cfg)
     all_items += collect_rss_feeds(sources_cfg)
+    all_items += collect_youtube_trending(sources_cfg, rules)
+    all_items += collect_x_trending(sources_cfg, rules)
+    all_items += collect_reddit_trending(sources_cfg, rules)
 
     logger.info(f"수집 완료: {len(all_items)}개")
 
     passed = []
+    candidates = []
     discarded_count = 0
 
     for item in all_items:
@@ -480,6 +912,25 @@ def run():
             logger.debug(f"폐기: [{score}점] {item['topic']}")
             continue
 
+        candidates.append(item)
+
+    candidates.sort(
+        key=lambda item: (
+            item.get('quality_score', 0),
+            item.get('search_demand_score', 0),
+            item.get('_trust_score', 0),
+        ),
+        reverse=True,
+    )
+    selected_titles = []
+
+    for item in candidates:
+        if is_duplicate(item.get('topic', ''), selected_titles, duplicate_threshold):
+            save_discarded(item, f'동일 배치 내 중복 주제 (유사도 {duplicate_threshold*100:.0f}% 이상)')
+            discarded_count += 1
+            logger.debug(f"폐기: [{item['quality_score']}점] {item['topic']} — 동일 배치 중복")
+            continue
+
         # 코너 배정
         topic_type = item.get('topic_type', 'trending')
         corner = assign_corner(item, topic_type)
@@ -508,6 +959,54 @@ def run():
         item['related_keywords'] = item.get('topic', '').split()[:5]
 
         passed.append(item)
+        selected_titles.append(item.get('topic', ''))
+
+    # 테마 다양성 쿼터: AI/테크 최대 3개, 나머지 카테고리 최대 각 2개
+    _COLLECTOR_THEME_CLUSTERS: dict[str, list[str]] = {
+        'ai_tech': [
+            'ai', 'gpt', 'claude', 'gemini', 'llm', '인공지능', 'agent', '에이전트',
+            'coding', 'code', 'github', '개발', '프로그래밍', 'show gn',
+            '오픈소스', 'open source', '딥러닝', '머신러닝', 'machine learning',
+        ],
+        'finance': [
+            '주식', 'etf', '투자', '나스닥', '코스피', '코스닥', 'bitcoin', 'btc',
+            '금리', '펀드', '배당', '증시', '환율', '달러', '테슬라', '엔비디아',
+            '반도체', '실적', '시황',
+        ],
+        'health': [
+            '건강', '운동', '다이어트', '수면', '혈당', '단백질', '영양', '헬스',
+            '비타민', '식단', '근력',
+        ],
+        'realestate': [
+            '부동산', '청약', '전세', '월세', '집값', '대출', '아파트', '분양',
+        ],
+    }
+    THEME_MAX = {'ai_tech': 3, 'finance': 2, 'health': 2, 'realestate': 2}
+    DEFAULT_THEME_MAX = 2
+
+    def _collector_detect_theme(item: dict) -> str:
+        text = f"{item.get('topic', '')} {item.get('description', '')}".lower()
+        best, best_count = 'other', 0
+        for theme, keywords in _COLLECTOR_THEME_CLUSTERS.items():
+            count = sum(1 for kw in keywords if kw in text)
+            if count > best_count:
+                best, best_count = theme, count
+        return best if best_count >= 1 else 'other'
+
+    theme_counts: dict[str, int] = {}
+    quota_passed: list[dict] = []
+    for item in passed:
+        theme = _collector_detect_theme(item)
+        limit = THEME_MAX.get(theme, DEFAULT_THEME_MAX)
+        if theme_counts.get(theme, 0) >= limit:
+            save_discarded(item, f'테마 쿼터 초과 ({theme} {limit}개 제한)')
+            discarded_count += 1
+            logger.debug(f"쿼터 초과 폐기: [{item['quality_score']}점][{theme}] {item['topic']}")
+            continue
+        theme_counts[theme] = theme_counts.get(theme, 0) + 1
+        quota_passed.append(item)
+
+    passed = quota_passed
 
     # 에버그린/트렌드/개성 비율 맞추기
     total_target = len(passed)
@@ -517,7 +1016,7 @@ def run():
 
     logger.info(
         f"합격: {len(passed)}개 (에버그린 {len(evergreen)}, 트렌드 {len(trending)}, "
-        f"개성 {len(personality)}) / 폐기: {discarded_count}개"
+        f"개성 {len(personality)}) / 폐기: {discarded_count}개 / 테마: {theme_counts}"
     )
 
     # 글감 저장

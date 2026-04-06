@@ -113,10 +113,20 @@ def build_coupang_link_html(product: dict) -> str:
 
 # ─── 본문 링크 삽입 ──────────────────────────────────
 
+def _insert_coupang_block(soup, block_html: str) -> None:
+    """결론 H2 앞 또는 본문 끝에 쿠팡 블록 삽입"""
+    for h2 in soup.find_all('h2'):
+        if any(kw in h2.get_text() for kw in ['결론', '마무리', '정리', '요약']):
+            h2.insert_before(BeautifulSoup(block_html, 'html.parser'))
+            return
+    soup.append(BeautifulSoup(block_html, 'html.parser'))
+
+
 def insert_links_into_html(html_content: str, coupang_keywords: list[str],
-                            fixed_links: list[dict]) -> str:
+                            fixed_links: list[dict],
+                            fallback_coupang_url: str = '') -> str:
     """HTML 본문에 쿠팡 링크와 고정 링크 삽입"""
-    soup = BeautifulSoup(html_content, 'lxml')
+    soup = BeautifulSoup(html_content, 'html.parser')
 
     # 고정 링크 (키워드 텍스트가 본문에 있으면 첫 번째 등장 위치에 링크)
     for fixed in fixed_links:
@@ -136,36 +146,39 @@ def insert_links_into_html(html_content: str, coupang_keywords: list[str],
                     f'<a href="{link_url}" target="_blank">{kw}</a>',
                     1
                 )
-                p.clear()
-                p.append(BeautifulSoup(new_html, 'lxml'))
+                new_tag = BeautifulSoup(f'<{p.name}>{new_html}</{p.name}>', 'html.parser').find(p.name)
+                p.replace_with(new_tag)
                 break
 
-    # 쿠팡 링크: 결론/추천 섹션 앞에 상품 박스 삽입
-    if coupang_keywords and (COUPANG_ACCESS_KEY and COUPANG_SECRET_KEY):
-        coupang_block_parts = []
-        for kw in coupang_keywords[:3]:  # 최대 3개 키워드
-            products = search_coupang_products(kw, limit=2)
-            for product in products:
-                coupang_block_parts.append(build_coupang_link_html(product))
+    if coupang_keywords:
+        if COUPANG_ACCESS_KEY and COUPANG_SECRET_KEY:
+            # API 키 있음 → 상품 검색 후 박스 삽입
+            coupang_block_parts = []
+            for kw in coupang_keywords[:3]:
+                products = search_coupang_products(kw, limit=2)
+                for product in products:
+                    coupang_block_parts.append(build_coupang_link_html(product))
 
-        if coupang_block_parts:
-            coupang_block_html = (
+            if coupang_block_parts:
+                block_html = (
+                    '<div class="coupang-products">\n'
+                    '<p><strong>관련 상품 추천</strong></p>\n'
+                    + ''.join(coupang_block_parts) +
+                    '</div>\n'
+                )
+                _insert_coupang_block(soup, block_html)
+
+        elif fallback_coupang_url:
+            # API 키 없음 → 기본 쿠팡 링크 삽입
+            keyword_label = ', '.join(coupang_keywords[:3])
+            block_html = (
                 '<div class="coupang-products">\n'
-                '<p><strong>관련 상품 추천</strong></p>\n'
-                + ''.join(coupang_block_parts) +
+                f'<p>🛒 <a href="{fallback_coupang_url}" target="_blank" rel="nofollow">'
+                f'{keyword_label} 관련 상품 보기 (쿠팡)</a></p>\n'
                 '</div>\n'
             )
-            # 결론 H2 앞에 삽입
-            for h2 in soup.find_all('h2'):
-                if any(kw in h2.get_text() for kw in ['결론', '마무리', '정리', '요약']):
-                    block = BeautifulSoup(coupang_block_html, 'lxml')
-                    h2.insert_before(block)
-                    break
-            else:
-                # 결론 섹션 없으면 본문 끝에 추가
-                body_tag = soup.find('body') or soup
-                block = BeautifulSoup(coupang_block_html, 'lxml')
-                body_tag.append(block)
+            _insert_coupang_block(soup, block_html)
+            logger.info(f"API 키 없음 — 기본 쿠팡 링크 삽입: {keyword_label}")
 
     return str(soup)
 
@@ -194,8 +207,16 @@ def process(article: dict, html_content: str) -> str:
     fixed_links = affiliate_cfg.get('fixed_links', [])
     disclaimer_text = affiliate_cfg.get('disclaimer_text', '')
 
+    # fixed_links 중 type=coupang인 항목의 URL을 fallback으로 사용
+    fallback_coupang_url = next(
+        (f['url'] for f in fixed_links if f.get('type') == 'coupang' and f.get('url')),
+        ''
+    )
+
     # 링크 삽입
-    html_content = insert_links_into_html(html_content, coupang_keywords, fixed_links)
+    html_content = insert_links_into_html(
+        html_content, coupang_keywords, fixed_links, fallback_coupang_url
+    )
 
     # 쿠팡 키워드가 있으면 면책 문구 추가
     if coupang_keywords and disclaimer_text:

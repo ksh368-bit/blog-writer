@@ -1,16 +1,10 @@
 {
   "fixed_links": [
     {
-      "keyword": "ChatGPT Plus",
-      "url": "https://chat.openai.com",
-      "label": "ChatGPT Plus 바로가기",
-      "type": "external"
-    },
-    {
-      "keyword": "Claude Pro",
-      "url": "https://claude.ai",
-      "label": "Claude Pro 바로가기",
-      "type": "external"
+      "keyword": "쿠팡",
+      "url": "https://link.coupang.com/a/ecHK1P",
+      "label": "쿠팡 바로가기",
+      "type": "coupang"
     }
   ],
   "coupang_category_map": {
@@ -26,8 +20,25 @@
     "USB허브": "usb-hub",
     "책상": "desk",
     "의자": "chair",
-    "서적": "book",
-    "스피커": "speaker"
+    "스피커": "speaker",
+    "태블릿": "tablet",
+    "스마트폰": "smartphone",
+    "SSD": "ssd",
+    "보조배터리": "power-bank",
+    "충전기": "charger",
+    "스마트워치": "smartwatch",
+    "프로그래밍": "프로그래밍 책",
+    "파이썬": "파이썬 책",
+    "머신러닝": "머신러닝 책",
+    "딥러닝": "딥러닝 책",
+    "인공지능": "인공지능 책",
+    "데이터 분석": "데이터분석 책",
+    "반도체": "반도체 책",
+    "알고리즘": "알고리즘 책",
+    "자바스크립트": "자바스크립트 책",
+    "생산성": "생산성 도서",
+    "다이어리": "다이어리",
+    "서적": "book"
   },
   "disclaimer_text": "이 포스팅은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다."
 }

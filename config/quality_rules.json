@@ -10,7 +10,8 @@
       "max": 20,
       "description": "트렌드 신선도",
       "hours_full_score": 24,
-      "hours_zero_score": 168
+      "hours_zero_score": 168,
+      "missing_date_score": 0
     },
     "search_demand": {
       "max": 20,
@@ -22,7 +23,8 @@
       "levels": {
         "high": 15,
         "medium": 8,
-        "low": 3
+        "low": 3,
+        "unknown": 0
       },
       "high_sources": ["github.com", "official blog", "공식", "press release"],
       "low_sources": ["twitter.com", "x.com", "reddit.com", "개인"]
@@ -31,6 +33,49 @@
       "max": 15,
       "description": "수익 연결 가능성",
       "keywords": ["도구", "앱", "서비스", "제품", "장비", "구독", "할인", "추천"]
+    },
+    "topic_fit": {
+      "max": 15,
+      "description": "핵심 주제 적합도",
+      "keywords": [
+        "ai", "인공지능", "llm", "gpt", "claude", "gemini", "chatgpt",
+        "윤리", "도덕", "철학", "가치관", "삶", "태도", "시각", "관점", "생각", "판단", "책임", "의미", "인간다움", "사회", "문화", "신뢰", "자율", "통제",
+        "도구", "툴", "tool", "app", "앱", "서비스", "자동화", "workflow",
+        "기술", "테크", "개발", "코딩", "프로그래밍", "개발자", "software", "saas",
+        "건강", "헬스", "health", "영양", "운동", "다이어트", "수면", "혈당", "혈압", "단백질", "근력", "유산소", "식단", "건강검진", "영양제", "비타민",
+        "주식", "투자", "증시", "etf", "펀드", "금리", "배당", "나스닥", "s&p", "bitcoin", "btc", "코스피", "코스닥", "미국주식", "국내주식", "해외주식", "테슬라", "엔비디아", "nvda", "반도체", "환율", "달러",
+        "시황", "주도주", "대장주", "실적", "어닝", "어닝서프라이즈", "가이던스", "섹터", "테마주", "수급", "외국인", "기관", "개인", "매수", "매도", "랠리", "반등", "조정", "상한가", "신고가",
+        "부동산", "청약", "전세", "월세", "집값", "대출", "연금", "isa", "irp", "절세"
+      ]
+    },
+    "negative_topic_fit": {
+      "max": 15,
+      "description": "비핵심 주제 감점",
+      "keywords": [
+        "야구", "축구", "농구", "배구", "골프", "kbo", "mlb", "epl", "축구대표팀",
+        "연예", "아이돌", "배우", "가수", "드라마", "예능", "결혼", "이혼", "열애", "컴백",
+        "사건", "사고", "폭행", "살인", "논란", "구속", "경찰", "검찰", "재판",
+        "로또", "운세", "사주", "띠별", "별자리"
+      ]
+    },
+    "novelty": {
+      "max": 15,
+      "description": "글감 자체의 새로움",
+      "keywords": [
+        "처음", "새로운", "신규", "등장", "출시", "공개", "발표", "업데이트", "혁신",
+        "unexpected", "novel", "new", "launch", "release", "breakthrough",
+        "윤리", "도덕", "철학", "관점", "재해석", "구조", "경계", "패러다임", "전환",
+        "자율", "자동화", "llm", "gpt", "claude", "gemini", "ai"
+      ]
+    },
+    "impact": {
+      "max": 15,
+      "description": "읽었을 때 오는 감각적/정서적 임팩트",
+      "keywords": [
+        "달", "우주", "손으로", "바느질", "붕괴", "압축", "폭격", "자립", "살아남",
+        "선명", "강렬", "장면", "충돌", "아이러니", "인간", "책임", "미래", "기억",
+        "moon", "space", "shock", "vivid", "dramatic", "human", "future"
+      ]
     }
   },
   "discard_rules": [
@@ -64,9 +109,20 @@
       "id": "clickbait",
       "description": "클릭베이트성 주제",
       "patterns": ["충격", "경악", "난리", "ㅋㅋ", "ㅠㅠ", "대박", "레전드", "역대급"]
+    },
+    {
+      "id": "lacks_novelty_and_impact",
+      "description": "새로움과 임팩트가 모두 약한 글감",
+      "max_novelty_score": 5,
+      "max_impact_score": 5
     }
   ],
   "evergreen_keywords": [
     "가이드", "방법", "사용법", "입문", "튜토리얼", "기초", "완전정복", "총정리"
-  ]
+  ],
+  "engagement_filters": {
+    "youtube_min_views": 50000,
+    "reddit_min_score": 300,
+    "reddit_min_upvote_ratio": 0.85
+  }
 }

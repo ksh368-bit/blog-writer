@@ -194,6 +194,41 @@ class GeminiWriter(BaseWriter):
             return ''
 
 
+class OpenAIWriter(BaseWriter):
+    """OpenAI API를 사용하는 글쓰기 엔진"""
+
+    def __init__(self, cfg: dict):
+        self.api_key = os.getenv(cfg.get('api_key_env', 'OPENAI_API_KEY'), '')
+        self.model = cfg.get('model', 'gpt-4.1')
+        self.max_tokens = cfg.get('max_tokens', 4096)
+        self.temperature = cfg.get('temperature', 0.7)
+
+    def write(self, prompt: str, system: str = '') -> str:
+        if not self.api_key:
+            logger.warning("OPENAI_API_KEY 없음 — OpenAIWriter 비활성화")
+            return ''
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=self.api_key)
+            messages = []
+            if system:
+                messages.append({'role': 'system', 'content': system})
+            messages.append({'role': 'user', 'content': prompt})
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+            return response.choices[0].message.content or ''
+        except ImportError:
+            logger.warning("openai 미설치 — OpenAIWriter 비활성화")
+            return ''
+        except Exception as e:
+            logger.error(f"OpenAIWriter 오류: {e}")
+            return ''
+
+
 class ClaudeWebWriter(BaseWriter):
     """Playwright Chromium에 세션 쿠키를 주입해 claude.ai를 자동화하는 Writer
 
@@ -269,6 +304,47 @@ class ClaudeWebWriter(BaseWriter):
                 return text.strip()
         except Exception as e:
             logger.error(f"ClaudeWebWriter 오류: {e}")
+            return ''
+
+
+class ClaudeCodeWriter(BaseWriter):
+    """Claude Code CLI (claude -p) — Claude Pro/Max 구독 기반, API 키 불필요"""
+
+    def __init__(self, cfg: dict):
+        self.timeout = cfg.get('timeout', 180)
+        self.model = cfg.get('model', '')  # 예: 'claude-haiku-4-5', 비어 있으면 CLI 기본값 사용
+
+    def write(self, prompt: str, system: str = '') -> str:
+        try:
+            message = f"{system}\n\n{prompt}".strip() if system else prompt
+            # 긴 프롬프트는 CLI 인자 길이 제한에 걸리므로 stdin으로 전달
+            cmd = ['claude', '-p', '--output-format', 'text']
+            if self.model:
+                cmd += ['--model', self.model]
+            result = subprocess.run(
+                cmd,
+                input=message.encode('utf-8'),
+                capture_output=True,
+                timeout=self.timeout,
+                shell=False,
+            )
+            stderr_str = result.stderr.decode('utf-8', errors='replace').strip()
+            if result.returncode != 0:
+                logger.error(f"ClaudeCodeWriter returncode={result.returncode} stderr={stderr_str[:300]}")
+                return ''
+            stdout = result.stdout.decode('utf-8', errors='replace').strip()
+            if not stdout:
+                logger.error(f"ClaudeCodeWriter stdout 비어있음 stderr={stderr_str[:300]}")
+                return ''
+            return stdout
+        except subprocess.TimeoutExpired:
+            logger.error(f"ClaudeCodeWriter 타임아웃 ({self.timeout}초)")
+            return ''
+        except FileNotFoundError:
+            logger.warning("claude CLI 없음 — ClaudeCodeWriter 비활성화")
+            return ''
+        except Exception as e:
+            logger.error(f"ClaudeCodeWriter 오류: {e}")
             return ''
 
 
@@ -609,13 +685,34 @@ class EngineLoader:
 
         writers = {
             'claude': ClaudeWriter,
+            'claude_code': ClaudeCodeWriter,
             'openclaw': OpenClawWriter,
+            'openai': OpenAIWriter,
             'gemini': GeminiWriter,
             'claude_web': ClaudeWebWriter,
             'gemini_web': GeminiWebWriter,
         }
         cls = writers.get(provider, ClaudeWriter)
         logger.info(f"Writer 로드: {provider} ({cls.__name__})")
+        return cls(options)
+
+    def get_reviewer(self) -> BaseWriter:
+        """검수용 엔진. engine.json reviewing 섹션 기준, 없으면 claude_code 기본값."""
+        reviewing_cfg = self._config.get('reviewing', {})
+        provider = reviewing_cfg.get('provider', 'claude_code')
+        options = reviewing_cfg.get('options', {}).get(provider, {})
+
+        writers = {
+            'claude': ClaudeWriter,
+            'claude_code': ClaudeCodeWriter,
+            'openclaw': OpenClawWriter,
+            'openai': OpenAIWriter,
+            'gemini': GeminiWriter,
+            'claude_web': ClaudeWebWriter,
+            'gemini_web': GeminiWebWriter,
+        }
+        cls = writers.get(provider, ClaudeCodeWriter)
+        logger.info(f"Reviewer 로드: {provider} ({cls.__name__})")
         return cls(options)
 
     def get_tts(self) -> BaseTTS:

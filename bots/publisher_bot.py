@@ -47,6 +47,12 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 BLOG_MAIN_ID = os.getenv('BLOG_MAIN_ID', '')
+RAW_TERM_REPLACEMENTS = {
+    'claude/': '전용 자동화 브랜치 접두어',
+    '/loop': '로컬 반복 실행 모드',
+    '/schedule': 'CLI 예약 명령',
+}
+TEST_MARKERS = ('테스트', '샘플', 'dummy', '[test]', '(test)')
 
 SCOPES = [
     'https://www.googleapis.com/auth/blogger',
@@ -99,9 +105,13 @@ def check_safety(article: dict, safety_cfg: dict) -> tuple[bool, str]:
         safety_cfg.get('investment_keywords', []) +
         safety_cfg.get('legal_keywords', [])
     )
+    all_phrases = safety_cfg.get('criticism_phrases', [])
     for kw in all_keywords:
         if kw in body:
             return True, f'위험 키워드 감지: "{kw}"'
+    for phrase in all_phrases:
+        if phrase in body:
+            return True, f'위험 구문 감지: "{phrase}"'
 
     # 출처 2개 미만
     min_sources = safety_cfg.get('min_sources_required', 2)
@@ -114,6 +124,80 @@ def check_safety(article: dict, safety_cfg: dict) -> tuple[bool, str]:
         return True, f'품질 점수 {quality_score}점 (자동 발행 최소: {min_score}점)'
 
     return False, ''
+
+
+def replace_raw_terms(text: str) -> str:
+    normalized = text
+    for raw, replacement in RAW_TERM_REPLACEMENTS.items():
+        normalized = normalized.replace(raw, replacement)
+    return normalized
+
+
+def normalize_h2_text(text: str) -> str:
+    cleaned = re.sub(r'<[^>]+>', '', replace_raw_terms(text)).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    if len(cleaned) <= 26:
+        return cleaned
+    parts = re.split(r'[:|,]| - | — | – |\?', cleaned)
+    for part in parts:
+        candidate = part.strip()
+        if 8 <= len(candidate) <= 26:
+            return candidate
+    return cleaned[:26].rstrip()
+
+
+def normalize_title_text(text: str) -> str:
+    cleaned = re.sub(r'<[^>]+>', '', replace_raw_terms(text)).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    if len(cleaned) <= 42:
+        return cleaned
+    parts = re.split(r'[:|]| - | — | – ', cleaned)
+    for part in parts:
+        candidate = part.strip()
+        if 14 <= len(candidate) <= 42:
+            return candidate
+    return cleaned[:42].rstrip()
+
+
+def sanitize_article_for_publish(article: dict) -> dict:
+    sanitized = dict(article)
+    for key in ('title', 'meta', 'disclaimer'):
+        if isinstance(sanitized.get(key), str):
+            sanitized[key] = replace_raw_terms(sanitized[key]).strip()
+
+    if isinstance(sanitized.get('title'), str):
+        sanitized['title'] = normalize_title_text(sanitized['title'])
+
+    if isinstance(sanitized.get('body'), str):
+        body = replace_raw_terms(sanitized['body'])
+
+        def _normalize_h2(match: re.Match) -> str:
+            return f"<h2>{normalize_h2_text(match.group(1))}</h2>"
+
+        body = re.sub(r'<h2>(.*?)</h2>', _normalize_h2, body, flags=re.IGNORECASE | re.DOTALL)
+        body = re.sub(r'\n{3,}', '\n\n', body)
+        sanitized['body'] = body.strip()
+
+    if isinstance(sanitized.get('key_points'), list):
+        sanitized['key_points'] = [
+            replace_raw_terms(str(point)).strip()
+            for point in sanitized['key_points']
+            if str(point).strip()
+        ]
+
+    return sanitized
+
+
+def is_test_article(article: dict) -> bool:
+    if article.get('_test_mode') is True:
+        return True
+    haystacks = [
+        str(article.get('title', '')),
+        str(article.get('meta', '')),
+        str(article.get('slug', '')),
+    ]
+    lowered = ' '.join(haystacks).lower()
+    return any(marker in lowered for marker in TEST_MARKERS)
 
 
 # ─── HTML 변환 ─────────────────────────────────────────
@@ -191,20 +275,35 @@ def build_full_html(article: dict, body_html: str, toc_html: str) -> str:
     """최종 HTML 조합: JSON-LD + 목차 + 본문 + 면책 문구"""
     json_ld = build_json_ld(article)
     disclaimer = article.get('disclaimer', '')
+    style_block = """
+<style>
+.t4p-post{font-size:17px;line-height:1.9;color:#1f2937;word-break:keep-all}
+.t4p-post h2{margin:2.2em 0 .8em;font-size:1.5rem;line-height:1.4;font-weight:800;color:#111827;letter-spacing:-0.01em}
+.t4p-post p{margin:0 0 1.1em}
+.t4p-post strong{font-weight:800;color:#111827;background:linear-gradient(transparent 62%, #fde68a 0)}
+.t4p-post code{padding:.15em .4em;border-radius:6px;background:#f3f4f6;color:#7c2d12;font-size:.92em}
+.t4p-post .toc-wrapper{margin:0 0 1.6em;padding:1rem 1.1rem;border:1px solid #e5e7eb;border-radius:14px;background:#fafaf9}
+.t4p-post .toc-wrapper ul{margin:.5em 0 0 1.1em;padding:0}
+.t4p-post .toc-wrapper li{margin:.35em 0}
+.t4p-post hr{margin:2.2em 0;border:none;border-top:1px solid #e5e7eb}
+.t4p-post .disclaimer{color:#6b7280;font-size:.94rem}
+</style>
+""".strip()
 
-    html_parts = [json_ld]
+    html_parts = [json_ld, style_block, '<article class="t4p-post">']
     if toc_html:
         html_parts.append(f'<div class="toc-wrapper">{toc_html}</div>')
     html_parts.append(body_html)
     if disclaimer:
         html_parts.append(f'<hr/><p class="disclaimer"><small>{disclaimer}</small></p>')
+    html_parts.append('</article>')
 
     return '\n'.join(html_parts)
 
 
 # ─── Blogger API ──────────────────────────────────────
 
-def publish_to_blogger(article: dict, html_content: str, creds: Credentials) -> dict:
+def publish_to_blogger(article: dict, html_content: str, creds: Credentials, is_draft: bool = False) -> dict:
     """Blogger API v3로 글 발행"""
     service = build('blogger', 'v3', credentials=creds)
     blog_id = BLOG_MAIN_ID
@@ -225,7 +324,7 @@ def publish_to_blogger(article: dict, html_content: str, creds: Credentials) -> 
     result = service.posts().insert(
         blogId=blog_id,
         body=body,
-        isDraft=False,
+        isDraft=is_draft,
     ).execute()
 
     return result
@@ -284,7 +383,7 @@ def send_pending_review_alert(article: dict, reason: str):
 
 def log_published(article: dict, post_result: dict):
     """발행 이력 저장"""
-    published_dir = DATA_DIR / 'published'
+    published_dir = DATA_DIR / ('drafts' if post_result.get('status') == 'DRAFT' else 'published')
     published_dir.mkdir(exist_ok=True)
     record = {
         'title': article.get('title', ''),
@@ -295,6 +394,7 @@ def log_published(article: dict, post_result: dict):
         'quality_score': article.get('quality_score', 0),
         'tags': article.get('tags', []),
         'sources': article.get('sources', []),
+        'status': post_result.get('status', 'LIVE'),
     }
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{record['post_id']}.json"
     with open(published_dir / filename, 'w', encoding='utf-8') as f:
@@ -318,6 +418,21 @@ def load_pending_review_file(filepath: str) -> dict:
         return json.load(f)
 
 
+def find_existing_pending_review(article: dict, reason: str) -> Path | None:
+    """같은 제목 + 같은 사유의 대기 파일이 이미 있으면 반환"""
+    pending_dir = DATA_DIR / 'pending_review'
+    pending_dir.mkdir(exist_ok=True)
+    title = article.get('title', '').strip()
+    for f in sorted(pending_dir.glob('*_pending.json')):
+        try:
+            data = json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        if data.get('title', '').strip() == title and data.get('pending_reason', '') == reason:
+            return f
+    return None
+
+
 # ─── 메인 발행 함수 ──────────────────────────────────
 
 def publish(article: dict) -> bool:
@@ -329,6 +444,7 @@ def publish(article: dict) -> bool:
     }
     Returns: True(발행 성공) / False(수동 검토 대기)
     """
+    article = sanitize_article_for_publish(article)
     logger.info(f"발행 시도: {article.get('title', '')}")
     safety_cfg = load_config('safety_keywords.json')
 
@@ -336,8 +452,12 @@ def publish(article: dict) -> bool:
     needs_review, review_reason = check_safety(article, safety_cfg)
     if needs_review:
         logger.warning(f"수동 검토 대기: {review_reason}")
-        save_pending_review(article, review_reason)
-        send_pending_review_alert(article, review_reason)
+        existing_pending = find_existing_pending_review(article, review_reason)
+        if existing_pending:
+            logger.info(f"기존 수동 검토 대기 재사용: {existing_pending.name}")
+        else:
+            save_pending_review(article, review_reason)
+            send_pending_review_alert(article, review_reason)
         return False
 
     # 변환봇이 미리 생성한 HTML이 있으면 재사용, 없으면 직접 변환
@@ -349,6 +469,13 @@ def publish(article: dict) -> bool:
         body_html = insert_adsense_placeholders(body_html)
         full_html = build_full_html(article, body_html, toc_html)
 
+    # 쿠팡 파트너스 / 고정 어필리에이트 링크 삽입
+    try:
+        import bots.linker_bot as linker_bot
+        full_html = linker_bot.process(article, full_html)
+    except Exception as e:
+        logger.warning(f"링크 삽입 건너뜀: {e}")
+
     # Google 인증
     try:
         creds = get_google_credentials()
@@ -356,17 +483,19 @@ def publish(article: dict) -> bool:
         logger.error(str(e))
         return False
 
+    test_mode = is_test_article(article)
+
     # Blogger 발행
     try:
-        post_result = publish_to_blogger(article, full_html, creds)
+        post_result = publish_to_blogger(article, full_html, creds, is_draft=test_mode)
         post_url = post_result.get('url', '')
-        logger.info(f"발행 완료: {post_url}")
+        logger.info(f"{'초안 저장' if test_mode else '발행 완료'}: {post_url}")
     except Exception as e:
         logger.error(f"Blogger 발행 실패: {e}")
         return False
 
     # Search Console 제출
-    if post_url:
+    if post_url and not test_mode:
         submit_to_search_console(post_url, creds)
 
     # 발행 이력 저장
@@ -375,12 +504,20 @@ def publish(article: dict) -> bool:
     # Telegram 알림
     title = article.get('title', '')
     corner = article.get('corner', '')
-    send_telegram(
-        f"✅ <b>발행 완료!</b>\n\n"
-        f"📌 <b>{title}</b>\n"
-        f"코너: {corner}\n"
-        f"URL: {post_url}"
-    )
+    if test_mode:
+        send_telegram(
+            f"🧪 <b>테스트 초안 저장</b>\n\n"
+            f"📌 <b>{title}</b>\n"
+            f"코너: {corner}\n"
+            f"URL: {post_url}"
+        )
+    else:
+        send_telegram(
+            f"✅ <b>발행 완료!</b>\n\n"
+            f"📌 <b>{title}</b>\n"
+            f"코너: {corner}\n"
+            f"URL: {post_url}"
+        )
 
     return True
 
@@ -388,7 +525,7 @@ def publish(article: dict) -> bool:
 def approve_pending(filepath: str) -> bool:
     """수동 검토 대기 글 승인 후 발행"""
     try:
-        article = load_pending_review_file(filepath)
+        article = sanitize_article_for_publish(load_pending_review_file(filepath))
         article.pop('pending_reason', None)
         article.pop('created_at', None)
 
@@ -398,19 +535,28 @@ def approve_pending(filepath: str) -> bool:
         full_html = build_full_html(article, body_html, toc_html)
 
         creds = get_google_credentials()
-        post_result = publish_to_blogger(article, full_html, creds)
+        test_mode = is_test_article(article)
+        post_result = publish_to_blogger(article, full_html, creds, is_draft=test_mode)
         post_url = post_result.get('url', '')
         log_published(article, post_result)
 
         # 대기 파일 삭제
         Path(filepath).unlink(missing_ok=True)
 
-        send_telegram(
-            f"✅ <b>[수동 승인] 발행 완료!</b>\n\n"
-            f"📌 {article.get('title', '')}\n"
-            f"URL: {post_url}"
-        )
-        logger.info(f"수동 승인 발행 완료: {post_url}")
+        if test_mode:
+            send_telegram(
+                f"🧪 <b>[수동 승인] 테스트 초안 저장</b>\n\n"
+                f"📌 {article.get('title', '')}\n"
+                f"URL: {post_url}"
+            )
+            logger.info(f"수동 승인 테스트 초안 저장: {post_url}")
+        else:
+            send_telegram(
+                f"✅ <b>[수동 승인] 발행 완료!</b>\n\n"
+                f"📌 {article.get('title', '')}\n"
+                f"URL: {post_url}"
+            )
+            logger.info(f"수동 승인 발행 완료: {post_url}")
         return True
     except Exception as e:
         logger.error(f"승인 발행 실패: {e}")

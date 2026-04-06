@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -357,6 +358,24 @@ def weekly_report():
     # 피드백 JSON 생성
     feedback = generate_feedback_json(index_rate, avg_ctr, low_performers, by_corner)
     save_analytics(feedback, f"{datetime.now().strftime('%Y%m%d')}_feedback.json")
+
+    # 주간 뉴스레터 HTML 생성 (최근 7일 발행 글)
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        weekly_articles = [
+            r for r in published_records
+            if r.get('published_at', '') >= cutoff
+        ]
+        if weekly_articles:
+            sys.path.insert(0, str(BASE_DIR / 'bots' / 'converters'))
+            import newsletter_converter
+            urls = [r.get('url', '') for r in weekly_articles]
+            newsletter_converter.generate_weekly(weekly_articles, urls=urls, save_file=True)
+            logger.info(f"주간 뉴스레터 생성 완료: {len(weekly_articles)}개 글")
+        else:
+            logger.info("이번 주 발행 글 없음 — 뉴스레터 생성 건너뜀")
+    except Exception as e:
+        logger.error(f"뉴스레터 생성 실패: {e}")
 
     logger.info("=== 분석봇 주간 리포트 완료 ===")
     return feedback
