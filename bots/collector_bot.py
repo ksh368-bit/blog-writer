@@ -63,24 +63,64 @@ def load_config(filename: str) -> dict:
 
 
 def load_published_titles() -> list[str]:
-    """발행 이력에서 제목 목록을 불러옴 (유사도 비교용)"""
+    """발행/작성/대기 이력에서 제목+topic 목록 통합 로드 (중복 감지용)"""
     titles = []
-    published_dir = DATA_DIR / 'published'
-    for f in published_dir.glob('*.json'):
-        try:
-            data = json.loads(f.read_text(encoding='utf-8'))
-            if 'title' in data:
-                titles.append(data['title'])
-        except Exception:
-            pass
+    for subdir in ('published', 'originals', 'topics'):
+        folder = DATA_DIR / subdir
+        if not folder.exists():
+            continue
+        for f in folder.glob('*.json'):
+            try:
+                data = json.loads(f.read_text(encoding='utf-8'))
+                for key in ('title', 'topic'):
+                    val = data.get(key, '').strip()
+                    if val and val not in titles:
+                        titles.append(val)
+            except Exception:
+                pass
     return titles
 
 
 def title_similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a, b).ratio()
+    """핵심 명사 중심 유사도: SequenceMatcher + Jaccard 키워드 겹침의 최댓값"""
+    import re
+    _STOP = {'보면', '읽으면', '하면', '되면', '알면', '이해하기', '완벽정리', '총정리',
+             '소개', '정리', '방법', '알아보기', '살펴보기', '가이드', '입문', '활용법',
+             '동시에', '한번에', '모두', '전부', '같이', '함께', '이후', '이전', '최신'}
+
+    def tokenize(s: str) -> set[str]:
+        tokens = re.findall(r'[가-힣a-zA-Z0-9]{2,}', s.lower())
+        return {t for t in tokens if t not in _STOP}
+
+    ta, tb = tokenize(a), tokenize(b)
+    if not ta or not tb:
+        return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+    # 부분 문자열 포함 매칭 (예: '지식' ⊂ '지식저장소')
+    def soft_intersect(s1: set, s2: set) -> int:
+        count = 0
+        for t in s1:
+            if any(t in u or u in t for u in s2):
+                count += 1
+        return count
+
+    inter = soft_intersect(ta, tb)
+
+    # Jaccard: 공통 / 합집합
+    jaccard = inter / len(ta | tb)
+
+    # Coverage: 짧은 제목 기준 포함률 (짧은 제목이 긴 제목의 부분집합)
+    coverage = inter / min(len(ta), len(tb))
+
+    # SequenceMatcher (불용어 제거 후)
+    na = ' '.join(sorted(ta))
+    nb = ' '.join(sorted(tb))
+    seq = SequenceMatcher(None, na, nb).ratio()
+
+    return max(jaccard, coverage * 0.90, seq)
 
 
-def is_duplicate(title: str, published_titles: list[str], threshold: float = 0.8) -> bool:
+def is_duplicate(title: str, published_titles: list[str], threshold: float = 0.65) -> bool:
     for pub_title in published_titles:
         if title_similarity(title, pub_title) >= threshold:
             return True
