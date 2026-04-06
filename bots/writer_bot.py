@@ -1563,6 +1563,9 @@ def write_article(topic_data: dict, output_path: Path, writer=None, style_prefix
     article['source_url'] = topic_data.get('source_url') or topic_data.get('source') or ''
     article['published_at'] = topic_data.get('published_at', '')
     article['created_at'] = datetime.now().isoformat()
+    # 글감 추적: 어떤 topic 파일에서 생성됐는지 기록
+    if topic_data.get('_source_file'):
+        article['_source_topic_file'] = topic_data['_source_file']
 
     # 쿠팡 파트너스 키워드 자동 추출 (본문에 등장하는 카테고리 매핑 키워드)
     try:
@@ -1626,6 +1629,7 @@ def run_pending(
             )
             break
         output_path = originals_dir / topic_file.name
+        topic_data['_source_file'] = topic_file.name
         try:
             article = write_article(topic_data, output_path, skip_review=skip_review)
             results.append({

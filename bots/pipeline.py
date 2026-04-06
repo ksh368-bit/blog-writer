@@ -306,6 +306,7 @@ def step_publish(articles: list[dict], summarize: bool = True) -> dict:
                         f'- 재작성 후에도 발행 단계에서 막혔다: {retry_reason}',
                         success=False,
                     )
+                    publisher_bot.save_pending_review(rewritten, retry_reason)
                     logger.warning(f"재작성 후에도 수동 검토 대기: {rewritten.get('title', title)} — {retry_reason}")
             else:
                 summary['manual_review'] += 1
@@ -315,6 +316,7 @@ def step_publish(articles: list[dict], summarize: bool = True) -> dict:
                     f'- 발행 단계 수동 검토 사유: {reason}',
                     success=False,
                 )
+                publisher_bot.save_pending_review(article, reason)
                 logger.warning(f"수동 검토 대기로 이동: {title}")
         except Exception as e:
             logger.error(f"발행 오류 [{title}]: {e}")
