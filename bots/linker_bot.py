@@ -221,7 +221,7 @@ _STOP_WORDS = {
 
 
 def _load_published_index() -> list[dict]:
-    """발행 이력 로드: [{title, url, tags}]"""
+    """발행 이력 로드: [{title, url, tags, meta, topic, key_points}]"""
     published_dir = DATA_DIR / 'published'
     records = []
     if not published_dir.exists():
@@ -231,27 +231,47 @@ def _load_published_index() -> list[dict]:
             d = json.loads(f.read_text(encoding='utf-8'))
             url = d.get('url', '')
             title = d.get('title', '')
-            tags = d.get('tags', [])
             if url and title:
-                records.append({'title': title, 'url': url, 'tags': tags})
+                records.append({
+                    'title': title,
+                    'url': url,
+                    'tags': d.get('tags', []),
+                    'meta': d.get('meta', ''),
+                    'topic': d.get('topic', ''),
+                    'key_points': d.get('key_points', []),
+                })
         except Exception:
             pass
     return records
 
 
-def _score_relevance(candidate_title: str, candidate_tags: list[str],
-                     current_title: str, current_body_plain: str) -> float:
-    """현재 글과 후보 글의 관련도 점수 (0~1)"""
+def _score_relevance(candidate: dict, current_title: str, current_body_plain: str) -> float:
+    """현재 글과 후보 글의 관련도 점수 (0~1)
+    title 단어, tags, meta 단어, topic 단어, key_points 키워드를 종합 평가
+    """
     score = 0.0
     combined = (current_title + ' ' + current_body_plain).lower()
-    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate_title):
-        if word.lower() in _STOP_WORDS:
-            continue
-        if word.lower() in combined:
-            score += 0.3
-    for tag in candidate_tags:
+
+    # 제목 단어 (가중치 0.25)
+    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate.get('title', '')):
+        if word.lower() not in _STOP_WORDS and word.lower() in combined:
+            score += 0.25
+
+    # tags (가중치 0.20)
+    for tag in candidate.get('tags', []):
         if tag.lower() in combined:
-            score += 0.2
+            score += 0.20
+
+    # meta 단어 (가중치 0.15)
+    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate.get('meta', '')):
+        if word.lower() not in _STOP_WORDS and word.lower() in combined:
+            score += 0.15
+
+    # topic 단어 (가중치 0.15)
+    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate.get('topic', '')):
+        if word.lower() not in _STOP_WORDS and word.lower() in combined:
+            score += 0.15
+
     return min(score, 1.0)
 
 
@@ -270,7 +290,7 @@ def insert_internal_links(html_content: str, article: dict, max_links: int = 3) 
     for rec in published:
         if rec['title'] == current_title:
             continue
-        score = _score_relevance(rec['title'], rec['tags'], current_title, plain_body)
+        score = _score_relevance(rec, current_title, plain_body)
         if score >= 0.25:
             scored.append((score, rec))
     scored.sort(key=lambda x: -x[0])

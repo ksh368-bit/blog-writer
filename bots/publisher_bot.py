@@ -486,6 +486,10 @@ def log_published(article: dict, post_result: dict):
         'tags': article.get('tags', []),
         'sources': article.get('sources', []),
         'status': post_result.get('status', 'LIVE'),
+        # 내부 링크 및 향후 재활용을 위한 핵심 필드
+        'topic': article.get('topic', ''),
+        'meta': article.get('meta', '') or article.get('meta_description', ''),
+        'key_points': article.get('key_points', []),
     }
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{record['post_id']}.json"
     with open(published_dir / filename, 'w', encoding='utf-8') as f:
