@@ -17,6 +17,8 @@ anthropic
 Pillow
 requests-oauthlib
 claude-agent-sdk
+mcp>=1.0.0
+playwright>=1.52
 # Phase 2 (쇼츠 변환)
 gTTS
 openai

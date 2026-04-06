@@ -1,3 +1,6 @@
+# The 4th Path: ⟨H⊕A⟩ ↦ Ω
+# Human × AI → a better world.
+# 22B Labs | the4thpath.com
 """
 발행봇 (publisher_bot.py)
 역할: AI가 작성한 글을 Blogger에 자동 발행
@@ -14,7 +17,6 @@ import json
 import logging
 import os
 import re
-from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
 

@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "blog-writer"
-version = "3.0.0.dev0"
+version = "3.3.0"
 description = "AI-powered blog and shorts automation engine"
 requires-python = ">=3.11"
 
@@ -16,6 +16,8 @@ dependencies = [
     "edge-tts>=6.1",
     "Pillow>=10.0",
     "pydub>=0.25",
+    "mcp>=1.0.0",
+    "playwright>=1.52",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +38,7 @@ dev = [
 bw = "blogwriter.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["blogwriter*", "bots*", "dashboard*"]
+include = ["blogwriter*", "blogwriter_mcp*", "bots*", "dashboard*"]
 
 [tool.black]
 line-length = 100

@@ -628,7 +628,7 @@ def _load_few_shot_examples(corner: str, topic_data: dict) -> str:
     return '\n'.join(lines).strip()
 
 
-def _build_prompt(topic_data: dict) -> tuple[str, str]:
+def _build_prompt(topic_data: dict, style_prefix: str = "") -> tuple[str, str]:
     topic = topic_data.get('topic', '').strip()
     corner = topic_data.get('corner', '쉬운세상').strip() or '쉬운세상'
     description = topic_data.get('description', '').strip()
@@ -659,7 +659,7 @@ def _build_prompt(topic_data: dict) -> tuple[str, str]:
     learned_rules = build_learned_rules_section(WRITER_MEMORY_PATH, corner)
     learned_section = f"\n\n{learned_rules}" if learned_rules else ''
 
-    return compose_writer_prompt(
+    system, prompt = compose_writer_prompt(
         topic=topic,
         corner=corner,
         description=description,
@@ -670,6 +670,9 @@ def _build_prompt(topic_data: dict) -> tuple[str, str]:
         few_shot_section=few_shot_section,
         learned_section=learned_section,
     )
+    if style_prefix:
+        system = style_prefix + system
+    return system, prompt
 
 
 # ─── 품질 검사 ───────────────────────────────────────
@@ -1172,17 +1175,20 @@ def write_article(
     Returns: article dict (저장 완료)
     Raises: RuntimeError — 모든 시도에서 파싱 자체가 불가능한 경우
     """
+
+
+def generate_article(topic_data: dict, writer=None, style_prefix: str = "") -> dict:
+    """
+    topic_data → EngineLoader 호출 → article dict 생성.
+    Returns: article dict (저장 없음)
+    Raises: RuntimeError — 글 작성 또는 파싱 실패 시
+    """
     from engine_loader import EngineLoader, get_token_budget
     from article_parser import parse_output
 
-    title = topic_data.get('topic', topic_data.get('title', ''))
-    corner = topic_data.get('corner', '쉬운세상')
-    logger.info(f"글 작성 시작: {title}")
-
-    loader = EngineLoader()
-    system, base_prompt = _build_prompt(topic_data)
-    writer = loader.get_writer()
-    reviewer = loader.get_reviewer() if not skip_review else None
+    system, prompt = _build_prompt(topic_data, style_prefix=style_prefix)
+    writer = writer or EngineLoader().get_writer()
+    raw_output = writer.write(prompt, system=system).strip()
 
     article = None
     write_succeeded = False
@@ -1532,6 +1538,21 @@ def write_article(
             raise WriteBlockedError(f'최대 재시도 횟수({MAX_WRITE_RETRIES}회) 소진 - 다음 글감으로 넘김')
 
     article = _sanitize_article(article)
+
+    return article
+
+
+def write_article(topic_data: dict, output_path: Path, writer=None, style_prefix: str = "") -> dict:
+    """
+    topic_data → EngineLoader 호출 → article dict 저장.
+    Returns: article dict (저장 완료)
+    Raises: RuntimeError — 글 작성 또는 파싱 실패 시
+    """
+    title = topic_data.get('topic', topic_data.get('title', ''))
+    logger.info(f"글 작성 시작: {title}")
+
+    article = generate_article(topic_data, writer=writer, style_prefix=style_prefix)
+
     article.setdefault('title', title)
     article['slug'] = article.get('slug') or _safe_slug(article['title'])
     article['corner'] = article.get('corner') or topic_data.get('corner', '쉬운세상')
@@ -1791,7 +1812,7 @@ def _rank_pending_topics(topic_files: list[Path], originals_dir: Path, corner: s
     return ranked
 
 
-def run_from_topic(topic: str, corner: str = '쉬운세상', skip_review: bool = False) -> dict:
+def run_from_topic(topic: str, corner: str = '쉬운세상', style_prefix: str = "") -> dict:
     """
     직접 주제 문자열로 글 작성.
     Returns: article dict
@@ -1810,10 +1831,10 @@ def run_from_topic(topic: str, corner: str = '쉬운세상', skip_review: bool =
         'source': '',
         'published_at': datetime.now().isoformat(),
     }
-    return write_article(topic_data, output_path, skip_review=skip_review)
+    return write_article(topic_data, output_path, style_prefix=style_prefix)
 
 
-def run_from_file(file_path: str) -> dict:
+def run_from_file(file_path: str, style_prefix: str = "") -> dict:
     """
     JSON 파일에서 topic_data를 읽어 글 작성.
     """
@@ -1823,7 +1844,7 @@ def run_from_file(file_path: str) -> dict:
     topic_file = Path(file_path)
     topic_data = json.loads(topic_file.read_text(encoding='utf-8'))
     output_path = originals_dir / topic_file.name
-    return write_article(topic_data, output_path)
+    return write_article(topic_data, output_path, style_prefix=style_prefix)
 
 
 # ─── CLI 진입점 ──────────────────────────────────────
