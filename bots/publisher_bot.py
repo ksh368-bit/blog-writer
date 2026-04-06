@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -149,24 +150,87 @@ def normalize_h2_text(text: str) -> str:
 def normalize_title_text(text: str) -> str:
     cleaned = re.sub(r'<[^>]+>', '', replace_raw_terms(text)).strip()
     cleaned = re.sub(r'\s+', ' ', cleaned)
-    if len(cleaned) <= 42:
+    if len(cleaned) <= 38:
         return cleaned
     parts = re.split(r'[:|]| - | — | – ', cleaned)
     for part in parts:
         candidate = part.strip()
-        if 14 <= len(candidate) <= 42:
+        if 14 <= len(candidate) <= 38:
             return candidate
-    return cleaned[:42].rstrip()
+    return cleaned[:38].rstrip()
+
+
+_AI_INSTRUCTION_RE = re.compile(
+    r'(\*{0,2}주의\*{0,2}\s*[:：]|'
+    r'현재는\s+아웃라인\s+단계|'
+    r'최종\s+원고를?\s+완성|'
+    r'각\s+섹션\s+제목\s+아래|'
+    r'다음\s+단계에서\s*[:：]|'
+    r'지금\s+보이는\s+이\s+아웃라인|'
+    r'진행할까요|'
+    r'조정하고\s+시작할까요)',
+    re.IGNORECASE,
+)
+
+
+def _sanitize_disclaimer(text: str) -> str:
+    """마크다운 수평선 또는 AI 지시문 패턴 이후 내용 제거."""
+    lines = []
+    for line in text.splitlines():
+        if re.match(r'^\s*-{3,}\s*$', line):
+            break
+        lines.append(line)
+    cleaned = '\n'.join(lines).strip()
+    m = _AI_INSTRUCTION_RE.search(cleaned)
+    if m:
+        cleaned = cleaned[:m.start()].strip()
+    return cleaned
+
+
+_META_PLACEHOLDERS = (
+    '핵심 문구부터 보면 뜻이 바로 잡힌다',
+    '핵심 문구부터 보면',
+    '뜻이 바로 잡힌다',
+    'META_DESCRIPTION',
+)
+
+
+def _extract_meta_from_body(body: str, title: str = '') -> str:
+    """본문 첫 <p> 태그에서 META 설명을 추출 (플레이스홀더 폴백용)"""
+    plain = re.sub(r'<[^>]+>', '', body or '').strip()
+    first_sentence = re.split(r'(?<=[.!?다])\s', plain)[0][:160].strip()
+    if len(first_sentence) >= 20:
+        return first_sentence
+    return title[:160] if title else ''
 
 
 def sanitize_article_for_publish(article: dict) -> dict:
     sanitized = dict(article)
+    if not sanitized.get('meta') and sanitized.get('meta_description'):
+        sanitized['meta'] = sanitized.get('meta_description', '')
+    if not sanitized.get('meta_description') and sanitized.get('meta'):
+        sanitized['meta_description'] = sanitized.get('meta', '')
     for key in ('title', 'meta', 'disclaimer'):
         if isinstance(sanitized.get(key), str):
             sanitized[key] = replace_raw_terms(sanitized[key]).strip()
 
+    # META가 플레이스홀더이면 본문 첫 문장으로 대체
+    meta = sanitized.get('meta', '')
+    if not meta or any(ph in meta for ph in _META_PLACEHOLDERS):
+        fallback = _extract_meta_from_body(sanitized.get('body', ''), sanitized.get('title', ''))
+        if fallback:
+            logger.info(f"META 플레이스홀더 감지 — 본문 첫 문장으로 대체: {fallback[:60]}…")
+            sanitized['meta'] = fallback
+            sanitized['meta_description'] = fallback
+
+    # disclaimer에 AI 지시문이 혼입된 경우 제거 (2차 방어)
+    if isinstance(sanitized.get('disclaimer'), str):
+        sanitized['disclaimer'] = _sanitize_disclaimer(sanitized['disclaimer'])
+
     if isinstance(sanitized.get('title'), str):
         sanitized['title'] = normalize_title_text(sanitized['title'])
+    if isinstance(sanitized.get('meta'), str):
+        sanitized['meta_description'] = sanitized['meta']
 
     if isinstance(sanitized.get('body'), str):
         body = replace_raw_terms(sanitized['body'])
@@ -271,8 +335,27 @@ def build_json_ld(article: dict, blog_url: str = '') -> str:
     return f'<script type="application/ld+json">\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n</script>'
 
 
+def build_og_tags(article: dict) -> str:
+    """Open Graph + Twitter Card 메타 태그 생성"""
+    title = article.get('title', '')
+    meta = article.get('meta_description', article.get('meta', ''))
+    url = article.get('url', '')
+    tags = [
+        f'<meta property="og:type" content="article"/>',
+        f'<meta property="og:title" content="{title}"/>',
+        f'<meta property="og:description" content="{meta}"/>',
+        f'<meta name="twitter:card" content="summary"/>',
+        f'<meta name="twitter:title" content="{title}"/>',
+        f'<meta name="twitter:description" content="{meta}"/>',
+    ]
+    if url:
+        tags.append(f'<meta property="og:url" content="{url}"/>')
+    return '\n'.join(tags)
+
+
 def build_full_html(article: dict, body_html: str, toc_html: str) -> str:
-    """최종 HTML 조합: JSON-LD + 목차 + 본문 + 면책 문구"""
+    """최종 HTML 조합: OG태그 + JSON-LD + 목차 + 본문 + 면책 문구"""
+    og_tags = build_og_tags(article)
     json_ld = build_json_ld(article)
     disclaimer = article.get('disclaimer', '')
     style_block = """
@@ -290,7 +373,7 @@ def build_full_html(article: dict, body_html: str, toc_html: str) -> str:
 </style>
 """.strip()
 
-    html_parts = [json_ld, style_block, '<article class="t4p-post">']
+    html_parts = [og_tags, json_ld, style_block, '<article class="t4p-post">']
     if toc_html:
         html_parts.append(f'<div class="toc-wrapper">{toc_html}</div>')
     html_parts.append(body_html)
@@ -315,11 +398,15 @@ def publish_to_blogger(article: dict, html_content: str, creds: Credentials, is_
     labels.extend(tags)
     labels = list(set(filter(None, labels)))
 
+    meta_desc = article.get('meta_description', article.get('meta', ''))
+
     body = {
         'title': article.get('title', ''),
         'content': html_content,
         'labels': labels,
     }
+    if meta_desc:
+        body['customMetaData'] = meta_desc
 
     result = service.posts().insert(
         blogId=blog_id,
@@ -331,16 +418,17 @@ def publish_to_blogger(article: dict, html_content: str, creds: Credentials, is_
 
 
 def submit_to_search_console(url: str, creds: Credentials):
-    """Google Search Console URL 색인 요청"""
+    """Google Indexing API로 URL 색인 요청 (URL_UPDATED)"""
     try:
-        service = build('searchconsole', 'v1', credentials=creds)
-        # URL Inspection API (실제 indexing 요청)
-        # 참고: 일반적으로 Blogger sitemap이 자동 제출되므로 보조 수단
-        logger.info(f"Search Console 제출: {url}")
-        # indexing API는 별도 서비스 계정 필요. 여기서는 로그만 남김.
-        # 실제 색인 촉진은 Blogger 내장 sitemap에 의존
+        import googleapiclient.errors
+        service = build('indexing', 'v3', credentials=creds)
+        body = {'url': url, 'type': 'URL_UPDATED'}
+        response = service.urlNotifications().publish(body=body).execute()
+        logger.info(f"Indexing API 제출 완료: {url} → {response.get('urlNotificationMetadata', {}).get('url', url)}")
     except Exception as e:
-        logger.warning(f"Search Console 제출 실패: {e}")
+        # Indexing API는 Blogger/News/Podcast 사이트에만 허용됨.
+        # 거부되면 Blogger 내장 sitemap에 의존 (무해한 실패)
+        logger.warning(f"Indexing API 제출 실패 (비치명적): {e}")
 
 
 # ─── Telegram ────────────────────────────────────────
@@ -387,6 +475,7 @@ def log_published(article: dict, post_result: dict):
     published_dir.mkdir(exist_ok=True)
     record = {
         'title': article.get('title', ''),
+        'slug': article.get('slug', ''),
         'corner': article.get('corner', ''),
         'url': post_result.get('url', ''),
         'post_id': post_result.get('id', ''),
@@ -400,6 +489,53 @@ def log_published(article: dict, post_result: dict):
     with open(published_dir / filename, 'w', encoding='utf-8') as f:
         json.dump(record, f, ensure_ascii=False, indent=2)
     return record
+
+
+def load_published_records() -> list[dict]:
+    records = []
+    for dirname in ('published', 'drafts'):
+        target_dir = DATA_DIR / dirname
+        if not target_dir.exists():
+            continue
+        for f in sorted(target_dir.glob('*.json')):
+            try:
+                records.append(json.loads(f.read_text(encoding='utf-8')))
+            except Exception:
+                continue
+    return records
+
+
+def find_duplicate_publication(article: dict, similarity_threshold: float = 0.88) -> str:
+    slug = str(article.get('slug', '')).strip()
+    title = str(article.get('title', '')).strip()
+    source_urls = {
+        str(item.get('url', '')).strip()
+        for item in (article.get('sources') or [])
+        if str(item.get('url', '')).strip()
+    }
+
+    for record in load_published_records():
+        published_slug = str(record.get('slug', '')).strip()
+        published_title = str(record.get('title', '')).strip()
+        published_source_urls = {
+            str(item.get('url', '')).strip()
+            for item in (record.get('sources') or [])
+            if str(item.get('url', '')).strip()
+        }
+
+        if slug and published_slug and slug == published_slug:
+            return f'기발행 slug 중복: "{slug}"'
+
+        if title and published_title:
+            similarity = SequenceMatcher(None, title, published_title).ratio()
+            if similarity >= similarity_threshold:
+                return f'기발행 제목과 유사도 {similarity*100:.0f}% 이상'
+
+        if source_urls and published_source_urls and source_urls & published_source_urls:
+            overlap = next(iter(source_urls & published_source_urls))
+            return f'기발행 글과 출처 URL 중복: {overlap}'
+
+    return ''
 
 
 def save_pending_review(article: dict, reason: str):
@@ -435,18 +571,23 @@ def find_existing_pending_review(article: dict, reason: str) -> Path | None:
 
 # ─── 메인 발행 함수 ──────────────────────────────────
 
-def publish(article: dict) -> bool:
+def publish_with_result(article: dict) -> tuple[bool, str]:
     """
     article: OpenClaw blog-writer가 출력한 파싱된 글 dict
     {
         title, meta, slug, tags, corner, body (markdown),
         coupang_keywords, sources, disclaimer, quality_score
     }
-    Returns: True(발행 성공) / False(수동 검토 대기)
+    Returns: (발행 성공 여부, 실패/대기 사유)
     """
     article = sanitize_article_for_publish(article)
     logger.info(f"발행 시도: {article.get('title', '')}")
     safety_cfg = load_config('safety_keywords.json')
+
+    duplicate_reason = find_duplicate_publication(article)
+    if duplicate_reason:
+        logger.warning(f"중복 발행 차단: {duplicate_reason}")
+        return False, duplicate_reason
 
     # 안전장치 검사
     needs_review, review_reason = check_safety(article, safety_cfg)
@@ -458,7 +599,7 @@ def publish(article: dict) -> bool:
         else:
             save_pending_review(article, review_reason)
             send_pending_review_alert(article, review_reason)
-        return False
+        return False, review_reason
 
     # 변환봇이 미리 생성한 HTML이 있으면 재사용, 없으면 직접 변환
     if article.get('_html_content'):
@@ -481,7 +622,7 @@ def publish(article: dict) -> bool:
         creds = get_google_credentials()
     except RuntimeError as e:
         logger.error(str(e))
-        return False
+        return False, str(e)
 
     test_mode = is_test_article(article)
 
@@ -492,7 +633,7 @@ def publish(article: dict) -> bool:
         logger.info(f"{'초안 저장' if test_mode else '발행 완료'}: {post_url}")
     except Exception as e:
         logger.error(f"Blogger 발행 실패: {e}")
-        return False
+        return False, f'Blogger 발행 실패: {e}'
 
     # Search Console 제출
     if post_url and not test_mode:
@@ -519,7 +660,12 @@ def publish(article: dict) -> bool:
             f"URL: {post_url}"
         )
 
-    return True
+    return True, ''
+
+
+def publish(article: dict) -> bool:
+    success, _ = publish_with_result(article)
+    return success
 
 
 def approve_pending(filepath: str) -> bool:

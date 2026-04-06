@@ -150,6 +150,8 @@ def insert_links_into_html(html_content: str, coupang_keywords: list[str],
                 p.replace_with(new_tag)
                 break
 
+    inserted_coupang_block = False
+
     if coupang_keywords:
         if COUPANG_ACCESS_KEY and COUPANG_SECRET_KEY:
             # API 키 있음 → 상품 검색 후 박스 삽입
@@ -167,6 +169,7 @@ def insert_links_into_html(html_content: str, coupang_keywords: list[str],
                     '</div>\n'
                 )
                 _insert_coupang_block(soup, block_html)
+                inserted_coupang_block = True
 
         elif fallback_coupang_url:
             # API 키 없음 → 기본 쿠팡 링크 삽입
@@ -178,7 +181,18 @@ def insert_links_into_html(html_content: str, coupang_keywords: list[str],
                 '</div>\n'
             )
             _insert_coupang_block(soup, block_html)
+            inserted_coupang_block = True
             logger.info(f"API 키 없음 — 기본 쿠팡 링크 삽입: {keyword_label}")
+
+    if not inserted_coupang_block and fallback_coupang_url:
+        block_html = (
+            '<div class="coupang-products">\n'
+            '<p>🛒 <a href="{url}" target="_blank" rel="nofollow">'
+            '추천 상품 보기 (쿠팡)</a></p>\n'
+            '</div>\n'
+        ).format(url=fallback_coupang_url)
+        _insert_coupang_block(soup, block_html)
+        logger.info("쿠팡 키워드 없음 — 기본 쿠팡 링크 삽입")
 
     return str(soup)
 
@@ -194,11 +208,100 @@ def add_disclaimer(html_content: str, disclaimer_text: str) -> str:
     return html_content + disclaimer_html
 
 
+# ─── 내부 링크 ───────────────────────────────────────
+
+DATA_DIR = BASE_DIR / 'data'
+_STOP_WORDS = {'있다', '없다', '하다', '되다', '이다', '같다', '보다', '이', '그', '저', '이것', '그것', '저것'}
+
+
+def _load_published_index() -> list[dict]:
+    """발행 이력 로드: [{title, url, tags}]"""
+    published_dir = DATA_DIR / 'published'
+    records = []
+    if not published_dir.exists():
+        return records
+    for f in sorted(published_dir.glob('*.json')):
+        try:
+            d = json.loads(f.read_text(encoding='utf-8'))
+            url = d.get('url', '')
+            title = d.get('title', '')
+            tags = d.get('tags', [])
+            if url and title:
+                records.append({'title': title, 'url': url, 'tags': tags})
+        except Exception:
+            pass
+    return records
+
+
+def _score_relevance(candidate_title: str, candidate_tags: list[str],
+                     current_title: str, current_body_plain: str) -> float:
+    """현재 글과 후보 글의 관련도 점수 (0~1)"""
+    score = 0.0
+    combined = (current_title + ' ' + current_body_plain).lower()
+    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate_title):
+        if word.lower() in _STOP_WORDS:
+            continue
+        if word.lower() in combined:
+            score += 0.3
+    for tag in candidate_tags:
+        if tag.lower() in combined:
+            score += 0.2
+    return min(score, 1.0)
+
+
+def insert_internal_links(html_content: str, article: dict, max_links: int = 3) -> str:
+    """발행된 다른 글과의 내부 링크 + 하단 '관련 글' 섹션 삽입"""
+    current_title = article.get('title', '')
+    published = _load_published_index()
+    if not published:
+        return html_content
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+    plain_body = soup.get_text()
+
+    # 관련도 점수 계산 (현재 글 제외)
+    scored = []
+    for rec in published:
+        if rec['title'] == current_title:
+            continue
+        score = _score_relevance(rec['title'], rec['tags'], current_title, plain_body)
+        if score > 0:
+            scored.append((score, rec))
+    scored.sort(key=lambda x: -x[0])
+    top_related = [rec for _, rec in scored[:max_links]]
+
+    if not top_related:
+        return html_content
+
+    # 하단 '관련 글' 섹션 생성
+    items_html = '\n'.join(
+        f'<li><a href="{r["url"]}">{r["title"]}</a></li>'
+        for r in top_related
+    )
+    related_html = (
+        '<div class="t4p-related" style="margin:2em 0;padding:1rem 1.1rem;'
+        'border:1px solid #e5e7eb;border-radius:14px;background:#f9fafb">\n'
+        '<p style="font-weight:700;margin:0 0 .6em">관련 글</p>\n'
+        f'<ul style="margin:.4em 0 0 1.2em;padding:0">\n{items_html}\n</ul>\n'
+        '</div>\n'
+    )
+
+    # article 태그 닫기 전 또는 본문 끝에 삽입
+    article_tag = soup.find('article')
+    if article_tag:
+        article_tag.append(BeautifulSoup(related_html, 'html.parser'))
+    else:
+        soup.append(BeautifulSoup(related_html, 'html.parser'))
+
+    logger.info(f"내부 링크 {len(top_related)}개 삽입: {[r['title'][:30] for r in top_related]}")
+    return str(soup)
+
+
 # ─── 메인 함수 ───────────────────────────────────────
 
 def process(article: dict, html_content: str) -> str:
     """
-    링크봇 메인: HTML 본문에 쿠팡/어필리에이트 링크 삽입 후 반환
+    링크봇 메인: HTML 본문에 쿠팡/어필리에이트 링크 + 내부 링크 삽입 후 반환
     """
     logger.info(f"링크 삽입 시작: {article.get('title', '')}")
     affiliate_cfg = load_config('affiliate_links.json')
@@ -213,13 +316,16 @@ def process(article: dict, html_content: str) -> str:
         ''
     )
 
+    # 내부 링크 삽입
+    html_content = insert_internal_links(html_content, article)
+
     # 링크 삽입
     html_content = insert_links_into_html(
         html_content, coupang_keywords, fixed_links, fallback_coupang_url
     )
 
-    # 쿠팡 키워드가 있으면 면책 문구 추가
-    if coupang_keywords and disclaimer_text:
+    # 쿠팡 링크/배너가 들어갔으면 면책 문구 추가
+    if 'coupang-products' in html_content and disclaimer_text:
         html_content = add_disclaimer(html_content, disclaimer_text)
 
     logger.info("링크 삽입 완료")
