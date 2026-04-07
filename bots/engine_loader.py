@@ -36,12 +36,130 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
+# ─── 토큰 예산 ──────────────────────────────────────────
+
+class TokenBudget:
+    """파이프라인 실행 중 누적 토큰 사용량을 추적하는 프로세스 레벨 싱글톤.
+
+    두 가지 기준 중 하나라도 초과하면 예산 소진으로 판단한다:
+      1. 추정 토큰 수: 한국어 1자 ≈ 1.5 토큰 (보수적 추정)
+      2. API 호출 횟수: max_calls 초과 시 즉시 소진
+    세션 한도·비율·최대 호출 수는 config/engine.json > token_budget 섹션에서 읽는다.
+    """
+
+    _CHARS_PER_TOKEN = 1.5  # 한·영 혼합 보수적 추정 (한국어 1자 ≈ 1~2 토큰)
+
+    def __init__(self, session_limit: int = 200_000, budget_ratio: float = 0.30,
+                 max_calls: int = 20):
+        self.session_limit = session_limit
+        self.budget_ratio = budget_ratio
+        self.max_calls = max_calls
+        self._used: int = 0
+        self._calls: int = 0
+
+    @property
+    def budget(self) -> int:
+        return int(self.session_limit * self.budget_ratio)
+
+    def add(self, prompt: str, response: str) -> None:
+        estimated = int((len(prompt) + len(response)) / self._CHARS_PER_TOKEN)
+        self._used += estimated
+        self._calls += 1
+        pct = self._used * 100 // max(self.budget, 1)
+        logger.info(
+            f"TokenBudget 호출 {self._calls}/{self.max_calls} | "
+            f"추정 토큰 {self._used:,}/{self.budget:,} ({pct}%)"
+        )
+        if self._calls >= self.max_calls:
+            logger.warning(
+                f"TokenBudget 호출 상한 도달: {self._calls}회 (max {self.max_calls})"
+            )
+        elif self._used >= self.budget:
+            logger.warning(
+                f"TokenBudget 토큰 한도 도달: {self._used:,}/{self.budget:,} 추정 토큰 "
+                f"({int(self.budget_ratio*100)}% 한도)"
+            )
+
+    def used(self) -> int:
+        return self._used
+
+    def calls(self) -> int:
+        return self._calls
+
+    def is_exceeded(self) -> bool:
+        return self._calls >= self.max_calls or self._used >= self.budget
+
+    def usage_pct(self) -> float:
+        token_pct = self._used / max(self.budget, 1) * 100
+        call_pct = self._calls / max(self.max_calls, 1) * 100
+        return max(token_pct, call_pct)
+
+    def reset(self) -> None:
+        self._used = 0
+        self._calls = 0
+        logger.info("TokenBudget 초기화")
+
+
+_token_budget: 'Optional[TokenBudget]' = None
+
+
+def get_token_budget() -> TokenBudget:
+    """현재 프로세스의 TokenBudget 싱글톤을 반환.
+    첫 호출 시 config/engine.json > token_budget 섹션으로 초기화한다."""
+    global _token_budget
+    if _token_budget is None:
+        cfg: dict = {}
+        if CONFIG_PATH.exists():
+            try:
+                cfg = json.loads(CONFIG_PATH.read_text(encoding='utf-8')).get('token_budget', {})
+            except Exception:
+                pass
+        _token_budget = TokenBudget(
+            session_limit=cfg.get('session_limit', 200_000),
+            budget_ratio=cfg.get('budget_ratio', 0.30),
+            max_calls=cfg.get('max_calls', 20),
+        )
+    return _token_budget
+
+
 # ─── 기본 추상 클래스 ──────────────────────────────────
 
 class BaseWriter(ABC):
     @abstractmethod
     def write(self, prompt: str, system: str = '') -> str:
         """글쓰기 요청. prompt에 대한 결과 문자열 반환."""
+
+
+class FallbackWriter(BaseWriter):
+    """주 엔진 실패 시 순차 폴백하는 Writer 래퍼.
+
+    한 번 실패한 엔진은 같은 실행 내에서 다시 시도하지 않는다 (서킷 브레이커).
+    """
+
+    def __init__(self, writers: list):
+        self.writers = writers
+        self.last_error = ''
+        self._disabled: set = set()  # 실패한 writer 인덱스
+
+    def write(self, prompt: str, system: str = '') -> str:
+        last_error = ''
+        for idx, writer in enumerate(self.writers):
+            if idx in self._disabled:
+                continue
+            result = writer.write(prompt, system=system)
+            if result:
+                self.last_error = ''
+                if idx > 0 or self._disabled:
+                    logger.warning(f"FallbackWriter: 폴백 엔진 사용 성공 ({writer.__class__.__name__})")
+                return result
+            last_error = getattr(writer, 'last_error', '') or last_error
+            self._disabled.add(idx)
+            if idx + 1 < len(self.writers):
+                logger.warning(
+                    f"FallbackWriter: {writer.__class__.__name__} 실패, 다음 엔진으로 폴백 ({last_error[:160]})"
+                )
+        self.last_error = last_error
+        return ''
 
 
 class BaseTTS(ABC):
@@ -89,7 +207,9 @@ class ClaudeWriter(BaseWriter):
             if system:
                 kwargs['system'] = system
             message = client.messages.create(**kwargs)
-            return message.content[0].text
+            text = message.content[0].text
+            get_token_budget().add(prompt, text)
+            return text
         except Exception as e:
             logger.error(f"ClaudeWriter 오류: {e}")
             return ''
@@ -104,9 +224,15 @@ class OpenClawWriter(BaseWriter):
     def __init__(self, cfg: dict):
         self.agent_name = cfg.get('agent_name', 'blog-writer')
         self.timeout = cfg.get('timeout', 300)
+        self.last_error = ''
 
     def write(self, prompt: str, system: str = '') -> str:
+        if get_token_budget().is_exceeded():
+            self.last_error = 'token-budget-exceeded'
+            logger.warning("OpenClawWriter: 토큰 예산 초과 — 호출 건너뜀")
+            return ''
         try:
+            self.last_error = ''
             message = f"{system}\n\n{prompt}".strip() if system else prompt
             cmd = [
                 self._CLI, 'agent',
@@ -122,14 +248,17 @@ class OpenClawWriter(BaseWriter):
             )
             stderr_str = result.stderr.decode('utf-8', errors='replace').strip()
             if result.returncode != 0:
+                self.last_error = stderr_str[:500] or f'returncode={result.returncode}'
                 logger.error(f"OpenClawWriter returncode={result.returncode} stderr={stderr_str[:300]}")
                 return ''
             # stdout이 비어있는 경우 — openclaw가 stderr에만 출력하거나 인증 실패
             if not result.stdout:
+                self.last_error = stderr_str[:500] or 'stdout-empty'
                 logger.error(f"OpenClawWriter stdout 비어있음 (returncode=0) stderr={stderr_str[:300]}")
                 return ''
             stdout = result.stdout.decode('utf-8', errors='replace').strip()
             if not stdout:
+                self.last_error = 'stdout-empty-after-decode'
                 logger.error("OpenClawWriter stdout 디코딩 후 비어있음")
                 return ''
             # 1) JSON 응답 시도 — JSON 블록 추출
@@ -143,19 +272,25 @@ class OpenClawWriter(BaseWriter):
                     data = json.loads(json_candidate)
                     payloads = data.get('result', {}).get('payloads', [])
                     if payloads:
-                        return payloads[0].get('text', '') or stdout
+                        text = payloads[0].get('text', '') or stdout
+                        get_token_budget().add(message, text)
+                        return text
                 except json.JSONDecodeError:
                     pass
             # 2) JSON 파싱 실패 또는 payloads 없음 → plain text 그대로 반환
             logger.info(f"OpenClawWriter plain text 응답 ({len(stdout)}자)")
+            get_token_budget().add(message, stdout)
             return stdout
         except subprocess.TimeoutExpired:
+            self.last_error = f'timeout-{self.timeout}s'
             logger.error(f"OpenClawWriter 타임아웃 ({self.timeout}초)")
             return ''
         except FileNotFoundError:
+            self.last_error = 'openclaw-cli-missing'
             logger.warning("openclaw CLI 없음 — OpenClawWriter 비활성화")
             return ''
         except Exception as e:
+            self.last_error = str(e)[:500]
             logger.error(f"OpenClawWriter 오류: {e}")
             return ''
 
@@ -185,7 +320,10 @@ class GeminiWriter(BaseWriter):
                 system_instruction=system if system else None,
             )
             response = model.generate_content(prompt)
-            return response.text
+            text = response.text
+            if text:
+                get_token_budget().add(prompt, text)
+            return text
         except ImportError:
             logger.warning("google-generativeai 미설치 — GeminiWriter 비활성화")
             return ''
@@ -220,7 +358,10 @@ class OpenAIWriter(BaseWriter):
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )
-            return response.choices[0].message.content or ''
+            text = response.choices[0].message.content or ''
+            if text:
+                get_token_budget().add(prompt, text)
+            return text
         except ImportError:
             logger.warning("openai 미설치 — OpenAIWriter 비활성화")
             return ''
@@ -315,6 +456,9 @@ class ClaudeCodeWriter(BaseWriter):
         self.model = cfg.get('model', '')  # 예: 'claude-haiku-4-5', 비어 있으면 CLI 기본값 사용
 
     def write(self, prompt: str, system: str = '') -> str:
+        if get_token_budget().is_exceeded():
+            logger.warning("ClaudeCodeWriter: 토큰 예산 초과 — 호출 건너뜀")
+            return ''
         try:
             message = f"{system}\n\n{prompt}".strip() if system else prompt
             # 긴 프롬프트는 CLI 인자 길이 제한에 걸리므로 stdin으로 전달
@@ -336,6 +480,7 @@ class ClaudeCodeWriter(BaseWriter):
             if not stdout:
                 logger.error(f"ClaudeCodeWriter stdout 비어있음 stderr={stderr_str[:300]}")
                 return ''
+            get_token_budget().add(message, stdout)
             return stdout
         except subprocess.TimeoutExpired:
             logger.error(f"ClaudeCodeWriter 타임아웃 ({self.timeout}초)")
@@ -694,7 +839,15 @@ class EngineLoader:
         }
         cls = writers.get(provider, ClaudeWriter)
         logger.info(f"Writer 로드: {provider} ({cls.__name__})")
-        return cls(options)
+        primary = cls(options)
+
+        if provider == 'openclaw':
+            fallback_options = writing_cfg.get('options', {}).get('claude_code', {})
+            fallback = ClaudeCodeWriter(fallback_options)
+            if Path('/Users/seungheekim/.local/bin/claude').exists():
+                logger.info("Writer 폴백 활성화: openclaw -> claude_code")
+                return FallbackWriter([primary, fallback])
+        return primary
 
     def get_reviewer(self) -> BaseWriter:
         """검수용 엔진. engine.json reviewing 섹션 기준, 없으면 claude_code 기본값."""
@@ -713,7 +866,14 @@ class EngineLoader:
         }
         cls = writers.get(provider, ClaudeCodeWriter)
         logger.info(f"Reviewer 로드: {provider} ({cls.__name__})")
-        return cls(options)
+        primary = cls(options)
+        if provider == 'openclaw':
+            fallback_options = reviewing_cfg.get('options', {}).get('claude_code', {})
+            fallback = ClaudeCodeWriter(fallback_options)
+            if Path('/Users/seungheekim/.local/bin/claude').exists():
+                logger.info("Reviewer 폴백 활성화: openclaw -> claude_code")
+                return FallbackWriter([primary, fallback])
+        return primary
 
     def get_tts(self) -> BaseTTS:
         """현재 설정된 tts provider에 맞는 BaseTTS 구현체 반환"""
