@@ -243,7 +243,57 @@ def presentation_review(
     if title and len(title) > 42:
         issues.append(f'- "{title}" → 제목이 너무 길어 목록/공유 화면 가독성이 떨어진다.')
 
+    # Q1: 목차 섹션 감지 — Wikipedia처럼 보이고 도입부 흡입력을 죽임
+    if re.search(r'<h[23][^>]*>\s*목차\s*</h[23]>', body, re.IGNORECASE):
+        issues.append(
+            '- 본문에 목차 섹션이 있다. 개인 블로그가 아닌 위키처럼 보이고 도입부 흡입력을 죽인다. '
+            '목차를 제거하고 바로 본론으로 시작해라.'
+        )
+
+    # Q2: 도입부 설명체 감지 — "X는 Y이다/입니다" 형태의 정의·사전 설명으로 시작하면 훅이 없음
+    _DECLARATIVE_END = re.compile(r'(이다|입니다|됩니다|합니다|줍니다|습니다)[.\s]*$')
+    _SUBJECT_PARTICLE = re.compile(r'^.{0,20}[은는이가]\s')
+    _HOOK_SIGNALS = re.compile(r'[0-9]|었|았|했|는데|인데|지만|면서도|[?？]|보니|했더니')
+    _first_p = re.search(r'<p>(.*?)</p>', body, re.IGNORECASE | re.DOTALL)
+    if _first_p:
+        _first_text = re.sub(r'<[^>]+>', '', _first_p.group(1)).strip()
+        # 전체 첫 문단을 대상으로 검사 ('보다', '되다' 등 중간 '다'에서 오분리 방지)
+        if (len(_first_text) > 15
+                and _DECLARATIVE_END.search(_first_text)
+                and _SUBJECT_PARTICLE.match(_first_text)
+                and not _HOOK_SIGNALS.search(_first_text)):
+            issues.append(
+                f'- 도입부 첫 문단이 "X는 Y이다/입니다" 형태의 설명체로 시작한다. '
+                '독자를 잡아끄는 장면·사건·질문으로 바꿔라. '
+                '예: "터미널에 명령어 하나를 입력했더니 AI가 코드 리뷰를 시작했다."'
+            )
+
+    # Q3: 마무리 스펙/설치 문장 감지 — 독자에게 인상 없이 기술 안내로 끝나는 패턴
+    _SPEC_CLOSING = re.compile(
+        r'(다운로드할 수 있|설치할 수 있|확인할 수 있|'
+        r'공식 문서에서|GitHub에서|공식 사이트에서|홈페이지에서|'
+        r'플랜 이상|버전 이상|이상에서만 사용|'
+        r'명령어로 진행|명령어로 설치|'
+        r'오픈소스 프로젝트이며|라이브러리 설치 여부|'
+        r'pip install|npm install|brew install)'
+    )
+    _all_p = re.findall(r'<p>(.*?)</p>', body, re.IGNORECASE | re.DOTALL)
+    if _all_p:
+        _last_p_text = re.sub(r'<[^>]+>', '', _all_p[-1]).strip()
+        if _SPEC_CLOSING.search(_last_p_text):
+            issues.append(
+                '- 마무리 문단이 스펙 안내·설치 방법·다운로드 안내로 끝난다. '
+                '독자에게 남는 인상이 없다. 인사이트·관점·행동 촉구 문장으로 바꿔라. '
+                '예: "한 번 써보면 안 쓰기 어려워진다."'
+            )
+
     h2_texts = re.findall(r'<h2>(.*?)</h2>', body, flags=re.IGNORECASE | re.DOTALL)
+    # Q4: 섹션 제목 결론 선공개 패턴 감지 — 독자 호기심을 죽이는 서술형 h2
+    _CONCLUSION_H2 = re.compile(
+        r'(한다|이다|된다|있다|없다|낮다|높다|좋다|나쁘다|크다|작다|많다|적다|'
+        r'빠르다|느리다|오른다|내린다|달라진다|줄어든다|늘어난다|올라간다|내려간다|'
+        r'강하다|약하다|쉽다|어렵다|중요하다|필요하다)$'
+    )
     for h2 in h2_texts:
         plain = re.sub(r'<[^>]+>', '', h2).strip()
         if not plain:
@@ -253,6 +303,12 @@ def presentation_review(
             issues.append(f'- "{plain}" → H2가 너무 길어 훑어읽기 가독성이 떨어진다.')
         if '<code' in h2.lower():
             issues.append(f'- "{plain}" → H2 안에 code 표기가 들어가 있다.')
+        if _CONCLUSION_H2.search(plain):
+            issues.append(
+                f'- "{plain}" → 섹션 제목이 결론을 미리 말해버린다. '
+                '독자 호기심을 죽이는 패턴이다. '
+                '"왜 ~할까", "~이 다른 이유", "~하는 구조"처럼 궁금증을 유발하는 형태로 바꿔라.'
+            )
 
     if body.count('<strong>') < max(2, len(h2_texts)):
         issues.append('- 본문 강조가 부족하다. 각 섹션 핵심어를 더 분명하게 드러내야 한다.')

@@ -192,7 +192,7 @@ class TestTitleSEOReview:
     def test_dangling_title_fails(self, dangling_title):
         ok, msg = self._review(self._good_article(dangling_title))
         assert not ok
-        title_issues = [l for l in msg.split('\n') if '제목' in l and '끊겼다' in l]
+        title_issues = [l for l in msg.split('\n') if '제목' in l and ('끊겼다' in l or '조건절' in l)]
         assert title_issues, f"'{dangling_title}' → 끊긴 제목 미감지"
 
     @pytest.mark.parametrize('good_title', [
@@ -202,7 +202,7 @@ class TestTitleSEOReview:
     ])
     def test_complete_title_passes(self, good_title):
         ok, msg = self._review(self._good_article(good_title))
-        title_issues = [l for l in msg.split('\n') if '제목' in l and '끊겼다' in l]
+        title_issues = [l for l in msg.split('\n') if '제목' in l and ('끊겼다' in l or '조건절' in l)]
         assert not title_issues, f"'{good_title}' → 오탐 발생"
 
     def test_missing_proper_noun_in_title_flagged(self):
