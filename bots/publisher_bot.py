@@ -18,6 +18,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import markdown

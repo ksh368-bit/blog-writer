@@ -461,8 +461,10 @@ class ClaudeCodeWriter(BaseWriter):
             return ''
         try:
             message = f"{system}\n\n{prompt}".strip() if system else prompt
-            # 긴 프롬프트는 CLI 인자 길이 제한에 걸리므로 stdin으로 전달
-            cmd = ['claude', '-p', '--output-format', 'text']
+            # claude CLI: ~/.local/bin/claude 우선, 없으면 PATH의 claude 사용
+            _local_claude = Path.home() / '.local/bin/claude'
+            _claude_bin = str(_local_claude) if _local_claude.exists() else 'claude'
+            cmd = [_claude_bin, '-p', '--output-format', 'text']
             if self.model:
                 cmd += ['--model', self.model]
             result = subprocess.run(

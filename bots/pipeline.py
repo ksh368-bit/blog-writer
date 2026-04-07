@@ -14,6 +14,8 @@
 import argparse
 import json
 import logging
+import os
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,15 +26,28 @@ PIPELINE_SUMMARY_PATH = DATA_DIR / 'pipeline_run_summary.json'
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
+_log_handlers: list = [logging.FileHandler(LOG_DIR / 'pipeline.log', encoding='utf-8')]
+# 터미널에서 직접 실행할 때만 콘솔 출력 추가 (백그라운드 실행 시 리디렉션과 중복 방지)
+if sys.stderr.isatty():
+    _log_handlers.append(logging.StreamHandler())
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_DIR / 'pipeline.log', encoding='utf-8'),
-        logging.StreamHandler(),
-    ]
+    handlers=_log_handlers,
 )
 logger = logging.getLogger(__name__)
+
+
+def _setup_signal_handlers() -> None:
+    """SIGHUP/SIGTERM 수신 시 로그를 남기고 종료 (백그라운드 실행 중 강제 종료 추적용)"""
+    def _handle(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.error(f"=== 파이프라인 강제 종료 (시그널 {sig_name}) ===")
+        sys.exit(1)
+
+    signal.signal(signal.SIGHUP, _handle)
+    signal.signal(signal.SIGTERM, _handle)
 
 
 def _notify_pipeline_issue(message: str) -> None:
@@ -337,7 +352,8 @@ def main():
     parser.add_argument('--slot', type=str, default='10시', help='발행 슬롯 레이블 (알림 메시지용, 예: 10시, 17시)')
     args = parser.parse_args()
 
-    logger.info("=== 파이프라인 시작 ===")
+    _setup_signal_handlers()
+    logger.info("=== 파이프라인 시작 (PID: %s) ===", os.getpid())
 
     # 1단계: 수집
     if args.topic:

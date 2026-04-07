@@ -1162,22 +1162,9 @@ def _build_publish_gate_feedback(feedback: str) -> str:
     )
 
 
-def write_article(
-    topic_data: dict,
-    output_path: Path,
-    skip_review: bool = False,
-    initial_feedback: str = '',
-) -> dict:
-    """
-    topic_data → EngineLoader 호출 → article dict 저장.
-    품질 미달 시 MAX_WRITE_RETRIES 내에서 피드백과 함께 재시도.
-    skip_review=True 이면 AI/룰 기반 검수를 모두 건너뜀 (품질 점수 통과만 확인).
-    Returns: article dict (저장 완료)
-    Raises: RuntimeError — 모든 시도에서 파싱 자체가 불가능한 경우
-    """
-
-
-def generate_article(topic_data: dict, writer=None, style_prefix: str = "") -> dict:
+def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix: str = "",
+                     skip_review: bool = False, initial_feedback: str = "",
+                     output_path: 'Path | None' = None) -> dict:
     """
     topic_data → EngineLoader 호출 → article dict 생성.
     Returns: article dict (저장 없음)
@@ -1186,8 +1173,13 @@ def generate_article(topic_data: dict, writer=None, style_prefix: str = "") -> d
     from engine_loader import EngineLoader, get_token_budget
     from article_parser import parse_output
 
+    get_token_budget().reset()  # 글 단위로 예산 초기화 — 이전 글이 예산 소진해도 이 글은 독립 예산
+    corner = topic_data.get('corner', '전체')
     system, prompt = _build_prompt(topic_data, style_prefix=style_prefix)
-    writer = writer or EngineLoader().get_writer()
+    base_prompt = prompt
+    loader = EngineLoader()
+    writer = writer or loader.get_writer()
+    reviewer = reviewer or loader.get_reviewer()
     raw_output = writer.write(prompt, system=system).strip()
 
     article = None
@@ -1223,10 +1215,20 @@ def generate_article(topic_data: dict, writer=None, style_prefix: str = "") -> d
             # 토큰 예산 초과 처리
             if get_token_budget().is_exceeded():
                 if _is_publishable(article):
-                    logger.warning(
-                        f"[시도 {attempt}] 토큰 예산 초과 ({get_token_budget().usage_pct():.1f}%) "
-                        f"— 현재 원고 강제 발행"
-                    )
+                    # 룰 기반 제목 검사 (AI 호출 없이) — 예산 초과라도 제목 품질은 확인
+                    _r4_ok, _r4_fb = _presentation_review(article)
+                    _r4b_ok, _r4b_fb = _title_actionability_review(article)
+                    if not _r4_ok or not _r4b_ok:
+                        _title_issues = '\n'.join(filter(None, [_r4_fb, _r4b_fb]))
+                        logger.warning(
+                            f"[시도 {attempt}] 토큰 예산 초과 + 제목/표현 검수 미달 "
+                            f"— 강제 발행 (미해결):\n{_title_issues}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[시도 {attempt}] 토큰 예산 초과 ({get_token_budget().usage_pct():.1f}%) "
+                            f"— 현재 원고 강제 발행"
+                        )
                     write_succeeded = True
                     break
                 else:
@@ -1354,10 +1356,19 @@ def generate_article(topic_data: dict, writer=None, style_prefix: str = "") -> d
             # 토큰 예산 초과 시 현재까지 개선된 글로 즉시 발행
             _budget = get_token_budget()
             if _budget.is_exceeded():
-                logger.warning(
-                    f"[시도 {attempt}] 토큰 예산 초과 ({_budget.used():,} / {_budget.budget:,} 토큰, "
-                    f"{_budget.usage_pct():.1f}%) — 리뷰 중단, 현재 글로 발행"
-                )
+                _r4_ok, _r4_fb = _presentation_review(parsed)
+                _r4b_ok, _r4b_fb = _title_actionability_review(parsed)
+                if not _r4_ok or not _r4b_ok:
+                    _title_issues = '\n'.join(filter(None, [_r4_fb, _r4b_fb]))
+                    logger.warning(
+                        f"[시도 {attempt}] 토큰 예산 초과 + 제목/표현 검수 미달 "
+                        f"— 강제 발행 (미해결):\n{_title_issues}"
+                    )
+                else:
+                    logger.warning(
+                        f"[시도 {attempt}] 토큰 예산 초과 ({_budget.used():,} / {_budget.budget:,} 토큰, "
+                        f"{_budget.usage_pct():.1f}%) — 리뷰 중단, 현재 글로 발행"
+                    )
                 article = parsed
                 write_succeeded = True
                 break
@@ -1542,7 +1553,8 @@ def generate_article(topic_data: dict, writer=None, style_prefix: str = "") -> d
     return article
 
 
-def write_article(topic_data: dict, output_path: Path, writer=None, style_prefix: str = "") -> dict:
+def write_article(topic_data: dict, output_path: Path, writer=None, style_prefix: str = "",
+                  skip_review: bool = False, initial_feedback: str = "") -> dict:
     """
     topic_data → EngineLoader 호출 → article dict 저장.
     Returns: article dict (저장 완료)
@@ -1551,7 +1563,9 @@ def write_article(topic_data: dict, output_path: Path, writer=None, style_prefix
     title = topic_data.get('topic', topic_data.get('title', ''))
     logger.info(f"글 작성 시작: {title}")
 
-    article = generate_article(topic_data, writer=writer, style_prefix=style_prefix)
+    article = generate_article(topic_data, writer=writer, style_prefix=style_prefix,
+                               skip_review=skip_review, initial_feedback=initial_feedback,
+                               output_path=output_path)
 
     article.setdefault('title', title)
     article['slug'] = article.get('slug') or _safe_slug(article['title'])
@@ -1816,7 +1830,7 @@ def _rank_pending_topics(topic_files: list[Path], originals_dir: Path, corner: s
     return ranked
 
 
-def run_from_topic(topic: str, corner: str = '쉬운세상', style_prefix: str = "") -> dict:
+def run_from_topic(topic: str, corner: str = '쉬운세상', style_prefix: str = "", skip_review: bool = False) -> dict:
     """
     직접 주제 문자열로 글 작성.
     Returns: article dict
@@ -1835,7 +1849,7 @@ def run_from_topic(topic: str, corner: str = '쉬운세상', style_prefix: str =
         'source': '',
         'published_at': datetime.now().isoformat(),
     }
-    return write_article(topic_data, output_path, style_prefix=style_prefix)
+    return write_article(topic_data, output_path, style_prefix=style_prefix, skip_review=skip_review)
 
 
 def run_from_file(file_path: str, style_prefix: str = "") -> dict:

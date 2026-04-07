@@ -212,12 +212,54 @@ def add_disclaimer(html_content: str, disclaimer_text: str) -> str:
 
 DATA_DIR = BASE_DIR / 'data'
 _STOP_WORDS = {
-    '있다', '없다', '하다', '되다', '이다', '같다', '보다',
-    '이', '그', '저', '이것', '그것', '저것',
-    # 주제와 무관한 일반 명사
+    # 동사/형용사 어간
+    '있다', '없다', '하다', '되다', '이다', '같다', '보다', '받다', '주다',
+    '오다', '가다', '나다', '들다', '쓰다', '알다', '말다', '두다',
+    # 지시어
+    '이', '그', '저', '이것', '그것', '저것', '여기', '거기', '저기',
+    # 범용 명사 (주제 구분력 없음)
     '기초', '가이드', '방법', '소개', '이해', '정리', '완벽', '총정리',
     '입문', '튜토리얼', '사용법', '활용법', '알아보기', '살펴보기',
+    '이유', '경우', '상황', '문제', '결과', '내용', '부분', '기준',
+    '서비스', '기능', '사용', '적용', '관련', '최신', '변화', '시작',
+    '관리', '설정', '확인', '지원', '제공', '공개', '발표', '업데이트',
+    '한국', '국내', '해외', '글로벌', '세계', '시장', '업계', '분야',
+    '사람', '사용자', '독자', '기업', '회사', '정부', '기관', '팀',
+    # 2글자 수 단위·접속사·조사류
+    '이번', '지난', '최근', '올해', '내년', '작년', '현재', '앞으로',
+    '이미', '아직', '또한', '그리고', '하지만', '그러나', '따라서',
 }
+
+# 테마 클러스터 (writer_bot._THEME_CLUSTERS 와 동기화)
+_THEME_CLUSTERS: dict[str, list[str]] = {
+    'ai_tech': [
+        'ai', 'gpt', 'claude', 'gemini', 'llm', '인공지능', 'agent', '에이전트',
+        'coding', 'code', 'github', '개발', '프로그래밍', '오픈소스', '딥러닝',
+        '머신러닝', '모델', '챗봇', '자동화',
+    ],
+    'finance': [
+        '주식', 'etf', '투자', '나스닥', '코스피', '금리', '펀드', '배당',
+        '증시', '환율', '달러', '반도체', '실적', '유가', '물가', '경제',
+        '인플레이션', '금융', '대출', '부동산',
+    ],
+    'health': [
+        '건강', '운동', '다이어트', '수면', '혈당', '단백질', '영양', '헬스',
+        '비타민', '식단', '근력', '질병', '치료',
+    ],
+    'realestate': [
+        '부동산', '청약', '전세', '월세', '집값', '아파트', '분양', '임대',
+    ],
+}
+
+
+def _detect_theme(text: str) -> str | None:
+    lower = text.lower()
+    best_theme, best_count = None, 0
+    for theme, keywords in _THEME_CLUSTERS.items():
+        count = sum(1 for kw in keywords if kw in lower)
+        if count > best_count:
+            best_theme, best_count = theme, count
+    return best_theme if best_count >= 1 else None
 
 
 def _load_published_index() -> list[dict]:
@@ -247,30 +289,56 @@ def _load_published_index() -> list[dict]:
 
 def _score_relevance(candidate: dict, current_title: str, current_body_plain: str) -> float:
     """현재 글과 후보 글의 관련도 점수 (0~1)
-    title 단어, tags, meta 단어, topic 단어, key_points 키워드를 종합 평가
+
+    신호별 기여 상한을 두어 흔한 단어 하나로 과대평가되는 것을 방지:
+      - 제목 단어:  단어당 0.15, 상한 0.30
+      - tags:       태그당 0.15, 상한 0.25
+      - key_points: 포인트당 0.20, 상한 0.35  ← 핵심 신호
+      - meta 단어:  단어당 0.08, 상한 0.15
+      - topic 단어: 단어당 0.08, 상한 0.15
+      - 동일 테마:  +0.20 보너스
     """
-    score = 0.0
     combined = (current_title + ' ' + current_body_plain).lower()
 
-    # 제목 단어 (가중치 0.25)
-    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate.get('title', '')):
-        if word.lower() not in _STOP_WORDS and word.lower() in combined:
-            score += 0.25
+    def _matched_words(text: str, per: float, cap: float) -> float:
+        total = 0.0
+        for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', text):
+            if word.lower() not in _STOP_WORDS and word.lower() in combined:
+                total += per
+                if total >= cap:
+                    return cap
+        return total
 
-    # tags (가중치 0.20)
+    score = 0.0
+    score += _matched_words(candidate.get('title', ''), 0.15, 0.30)
+    score += _matched_words(candidate.get('meta', ''), 0.08, 0.15)
+    score += _matched_words(candidate.get('topic', ''), 0.08, 0.15)
+
+    # tags
+    tag_score = 0.0
     for tag in candidate.get('tags', []):
         if tag.lower() in combined:
-            score += 0.20
+            tag_score += 0.15
+            if tag_score >= 0.25:
+                break
+    score += tag_score
 
-    # meta 단어 (가중치 0.15)
-    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate.get('meta', '')):
-        if word.lower() not in _STOP_WORDS and word.lower() in combined:
-            score += 0.15
+    # key_points — 가장 강한 관련성 신호
+    kp_score = 0.0
+    for kp in candidate.get('key_points', []):
+        kp_words = re.findall(r'[가-힣a-zA-Z0-9]{2,}', str(kp))
+        kp_hits = sum(1 for w in kp_words if w.lower() not in _STOP_WORDS and w.lower() in combined)
+        if kp_hits >= 2:  # key_point 내 단어 2개 이상 매칭 시에만 유효
+            kp_score += 0.20
+            if kp_score >= 0.35:
+                break
+    score += kp_score
 
-    # topic 단어 (가중치 0.15)
-    for word in re.findall(r'[가-힣a-zA-Z0-9]{2,}', candidate.get('topic', '')):
-        if word.lower() not in _STOP_WORDS and word.lower() in combined:
-            score += 0.15
+    # 동일 테마 보너스
+    candidate_text = f"{candidate.get('title', '')} {candidate.get('topic', '')} {candidate.get('meta', '')}"
+    current_text = f"{current_title} {current_body_plain[:300]}"
+    if _detect_theme(candidate_text) and _detect_theme(candidate_text) == _detect_theme(current_text):
+        score += 0.20
 
     return min(score, 1.0)
 
@@ -285,13 +353,13 @@ def insert_internal_links(html_content: str, article: dict, max_links: int = 3) 
     soup = BeautifulSoup(html_content, 'html.parser')
     plain_body = soup.get_text()
 
-    # 관련도 점수 계산 (현재 글 제외, 최소 임계값 0.25 이상만 포함)
+    # 관련도 점수 계산 (현재 글 제외, 최소 임계값 0.50 이상만 포함)
     scored = []
     for rec in published:
         if rec['title'] == current_title:
             continue
         score = _score_relevance(rec, current_title, plain_body)
-        if score >= 0.25:
+        if score >= 0.50:
             scored.append((score, rec))
     scored.sort(key=lambda x: -x[0])
     top_related = [rec for _, rec in scored[:max_links]]

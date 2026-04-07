@@ -165,21 +165,80 @@ def presentation_review(
 
     # 제목 완결성 검사: 끊긴 제목 감지
     _DANGLING_TITLE_ENDINGS = ('을 보면', '를 보면', '이 보면', '으로 보면', '면 Claude', '면 AI', '면 LLM')
-    if title and any(title.endswith(e) for e in _DANGLING_TITLE_ENDINGS):
-        issues.append(f'- "{title}" → 제목이 중간에 끊겼다. 결과나 변화가 보이는 완결된 문장으로 마무리해라.')
+    # 결과 표현이 없는데 조건절(~하면/보면/쓰면 등)로만 끝나는 제목 감지
+    _RESULT_PATTERNS = re.compile(
+        r'(된다|안 된다|보인다|줄어|쉬워|달라진다|잡힌다|낮아|높아|바뀐다|없어진다|'
+        r'생긴다|만들어진다|줄어든다|덜하다|적어진다|커진다|나온다|나타난다|알 수 있다|'
+        r'파악된다|해결된다|사라진다|빨라진다|늘어난다|올라간다|내려간다|알게 된다|'
+        r'든다|이다|였다|됐다|있다|없다)'
+    )
+    _VERB_MYEON = re.compile(
+        r'(하면|보면|쓰면|되면|읽으면|고르면|넣으면|바꾸면|걸면|열면|올리면|내리면|'
+        r'줄이면|늘리면|확인하면|사용하면|설치하면|실행하면|적용하면|입력하면|주문하면|'
+        r'클릭하면|선택하면|연결하면|등록하면|구독하면|설정하면|붙이면|꺼내면|찾으면|'
+        r'켜면|끄면|나누면|모으면|올리면|담으면|묶으면|돌리면)$'
+    )
+    if title and (
+        any(title.endswith(e) for e in _DANGLING_TITLE_ENDINGS)
+        or (_VERB_MYEON.search(title) and not _RESULT_PATTERNS.search(title))
+    ):
+        issues.append(f'- "{title}" → 제목이 조건절로만 끝났다. "[무엇을 하면] [이렇게 된다]" 구조로 결과까지 완결해라.')
 
     # 제목에 글감 핵심 키워드(고유명사) 포함 여부 검사
+    # 영문+숫자 고유명사 AND 한국어 브랜드/서비스명 모두 체크
     topic = article.get('topic', '')
     if topic and title:
-        # topic에서 대문자로 시작하거나 영문·숫자 포함된 고유명사 추출
-        proper_nouns = re.findall(r'[A-Za-z0-9][A-Za-z0-9\s\.\-]{1,30}', topic)
-        proper_nouns = [t.strip() for t in proper_nouns if len(t.strip()) >= 3]
-        missing = [n for n in proper_nouns[:3] if n.lower() not in title.lower()]
-        if missing and len(missing) == len(proper_nouns[:3]):
-            issues.append(
-                f'- 제목에 글감 핵심 고유명사({", ".join(missing[:2])})가 없다. '
-                '검색에서 찾히려면 도구명·서비스명·브랜드명이 제목에 들어가야 한다.'
-            )
+        topic_clean = re.sub(r'[\[\]()（）【】「」『』《》<>]', ' ', topic)
+
+        # 영문/숫자 고유명사 (기존)
+        en_nouns = re.findall(r'[A-Za-z0-9][A-Za-z0-9\s\.\-]{1,30}', topic_clean)
+        en_nouns = [t.strip() for t in en_nouns if len(t.strip()) >= 3]
+
+        # 한국어 고유명사 후보 — 2~6 한글 + 끝 조사 1글자 제거 시도
+        _KR_PARTICLES_END = set('을를이가은는와과의에도만서랑')
+        _KR_COMMON = {
+            # 일반 명사/동사 파생어
+            '관련', '이유', '방법', '결과', '현황', '분석', '정리', '소식', '내용',
+            '최신', '최초', '세계', '한국', '국내', '해외', '공식', '발표', '업데이트',
+            '완전', '정도', '수준', '이후', '이전', '중심', '기반', '활용', '구현',
+            '지원', '협약', '제공', '출시', '공개', '추진', '확대', '개선', '강화',
+            # 뉴스 헤드라인 노이즈
+            '게시판', '속보', '단독', '긴급', '종합', '업계', '전문가', '관계자',
+            '서비스', '플랫폼', '시스템', '솔루션', '프로그램',
+            # 행정/경제 일반어
+            '소상공인', '중소기업', '스타트업', '대기업', '투자자', '사용자',
+            '시장', '산업', '분야', '영역', '부문',
+        }
+        kr_raw = re.findall(r'[가-힣]{2,7}', topic_clean)
+        kr_nouns = []
+        seen_kr: set = set()
+        for w in kr_raw:
+            # 끝 1글자가 조사이면 제거
+            candidate = w[:-1] if (w[-1] in _KR_PARTICLES_END and len(w) > 2) else w
+            if candidate not in seen_kr and candidate not in _KR_COMMON and len(candidate) >= 2:
+                seen_kr.add(candidate)
+                kr_nouns.append(candidate)
+
+        # 영문 고유명사: 하나도 제목에 없으면 경고
+        if en_nouns:
+            missing_en = [n for n in en_nouns[:3] if n.lower() not in title.lower()]
+            if missing_en and len(missing_en) == len(en_nouns[:3]):
+                issues.append(
+                    f'- 제목에 글감 핵심 고유명사({", ".join(missing_en[:2])})가 없다. '
+                    '검색에서 찾히려면 도구명·서비스명·브랜드명이 제목에 들어가야 한다.'
+                )
+        # 영문 고유명사 없을 때: 한국어 키워드 중 짧은 것(브랜드명 우선)이 제목에 없으면 경고
+        elif kr_nouns:
+            # 짧은 단어 우선 — 2-3음절이 브랜드명일 가능성 높음
+            kr_nouns_sorted = sorted(kr_nouns[:6], key=lambda w: (len(w), kr_nouns.index(w)))
+            top_kr = kr_nouns_sorted[:3]
+            missing_kr = [n for n in top_kr if n not in title]
+            # 주요 키워드가 하나도 없으면 경고 (짧은 단어 우선 메시지 — 브랜드명 강조)
+            if missing_kr and len(missing_kr) == len(top_kr):
+                issues.append(
+                    f'- 제목에 글감 핵심 키워드({", ".join(top_kr[:2])})가 없다. '
+                    '검색에서 찾히려면 브랜드명·서비스명 등 이 글만의 핵심 키워드가 제목에 들어가야 한다.'
+                )
 
     if title and len(title) > 42:
         issues.append(f'- "{title}" → 제목이 너무 길어 목록/공유 화면 가독성이 떨어진다.')
