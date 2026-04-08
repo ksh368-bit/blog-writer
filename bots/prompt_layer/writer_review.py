@@ -351,6 +351,57 @@ def presentation_review(
             '첫 등장 때 괄호 안에 한국어 풀이를 추가하라. 예: "LHC(대형 강입자 충돌기)".'
         )
 
+    # Q8: 섹션별 두괄식 확장 — 2번째 이후 H2 섹션 첫 문단도 선언체("X는 Y이다") 시작 감지
+    # Q2는 글 전체의 첫 문단만 검사하지만, 인기 블로그는 각 섹션도 두괄식으로 시작해야 함
+    _DECLARATIVE_END = re.compile(r'(이다|입니다|됩니다|합니다|줍니다|습니다)[.\s]*$')
+    _SUBJECT_PARTICLE = re.compile(r'^.{0,20}[은는이가]\s')
+    _HOOK_SIGNALS = re.compile(r'[0-9]|었|았|했|는데|인데|지만|면서도|[?？]|보니|했더니')
+    _section_re = re.compile(r'<h2[^>]*>.*?</h2>\s*((?:<p>.*?</p>\s*)*)', re.IGNORECASE | re.DOTALL)
+    _section_matches = list(_section_re.finditer(body))
+    _declarative_sections: list[str] = []
+    for _sm in _section_matches[1:]:  # 첫 섹션은 Q2가 처리, 두 번째부터 검사
+        _sec_content = _sm.group(1)
+        _sec_first_p = re.search(r'<p>(.*?)</p>', _sec_content, re.IGNORECASE | re.DOTALL)
+        if not _sec_first_p:
+            continue
+        _sec_text = re.sub(r'<[^>]+>', '', _sec_first_p.group(1)).strip()
+        if (len(_sec_text) > 15
+                and _DECLARATIVE_END.search(_sec_text)
+                and _SUBJECT_PARTICLE.match(_sec_text)
+                and not _HOOK_SIGNALS.search(_sec_text)):
+            _declarative_sections.append(_sec_text[:30])
+    if _declarative_sections:
+        issues.append(
+            f'- 섹션 첫 문단 설명체: {len(_declarative_sections)}개 H2 섹션의 첫 문단이 '
+            '"X는 Y이다/입니다" 형태로 시작한다. '
+            '각 섹션도 숫자·사건·과거형으로 바로 시작하는 두괄식으로 써라. '
+            f'예: "{_declarative_sections[0]}..."'
+        )
+
+    # Q9: 문단 추상어 오프너 반복 감지 — "이것은", "일반적으로", "많은 사람들이" 등이 2개+ 반복 시 경고
+    # 인기 블로그 연구: 추상어로 시작하는 문단이 2개 이상이면 글 정보 밀도가 낮아 독자 이탈
+    _ABSTRACT_OPENER_RE = re.compile(
+        r'^(이것은\s|이것이\s|이것을\s|'
+        r'일반적으로\s|일반적인\s|'
+        r'많은 사람들이\s|많은 사람들은\s|많은 분들이\s|많은 분들은\s|'
+        r'현대 사회에서\s|현대인들은\s|현대인들이\s|'
+        r'오늘날\s|요즘 시대에\s|'
+        r'사람들은 보통\s|우리는 보통\s)'
+    )
+    _all_p_texts = [re.sub(r'<[^>]+>', '', p).strip()
+                    for p in re.findall(r'<p>(.*?)</p>', body, re.IGNORECASE | re.DOTALL)]
+    _abstract_opener_count = sum(
+        1 for p in _all_p_texts[1:]  # 첫 문단 제외 (Q2가 처리)
+        if _ABSTRACT_OPENER_RE.match(p) and len(p) > 10
+    )
+    if _abstract_opener_count >= 2:
+        issues.append(
+            f'- 추상어 오프너가 {_abstract_opener_count}개 문단에서 반복된다. '
+            '"이것은", "일반적으로", "많은 사람들이", "오늘날" 등으로 시작하면 '
+            '독자가 글에서 구체 정보를 얻지 못하고 이탈한다. '
+            '숫자·고유명사·사례로 바로 시작해라.'
+        )
+
     # Q5: 본문 최소 텍스트 길이 검사 — 공백 제거 기준 600자 미만이면 독자가 읽기에 너무 짧음
     _plain_no_space = re.sub(r'\s', '', re.sub(r'<[^>]+>', '', body))
     if len(_plain_no_space) < 600:
