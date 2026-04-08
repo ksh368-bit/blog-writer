@@ -1,6 +1,11 @@
 {
   "_comment": "The Day 블로그 자동 수익 엔진 — 엔진 설정 (v3)",
-  "_updated": "2026-03-26",
+  "_updated": "2026-04-08",
+  "token_budget": {
+    "session_limit": 200000,
+    "budget_ratio": 0.40,
+    "_comment": "budget = session_limit * budget_ratio = 200,000 * 0.40 = 80,000 토큰"
+  },
   "writing": {
     "provider": "openclaw",
     "_comment_provider": "openclaw=ChatGPT Pro(OAuth), claude_web=Claude Max(웹쿠키), gemini_web=Gemini Pro(웹쿠키), claude=Anthropic API키, gemini=Google AI API키",
