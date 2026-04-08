@@ -242,6 +242,8 @@ def presentation_review(
 
     if title and len(title) > 42:
         issues.append(f'- "{title}" → 제목이 너무 길어 목록/공유 화면 가독성이 떨어진다.')
+    if title and len(title) < 15:
+        issues.append(f'- "{title}" → 제목이 너무 짧다 ({len(title)}자). 글감의 핵심 키워드와 행동/결과를 담아 15자 이상으로 써라.')
 
     # Q1: 목차 섹션 감지 — Wikipedia처럼 보이고 도입부 흡입력을 죽임
     if re.search(r'<h[23][^>]*>\s*목차\s*</h[23]>', body, re.IGNORECASE):

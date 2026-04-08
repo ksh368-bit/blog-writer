@@ -207,6 +207,50 @@ def _extract_meta_from_body(body: str, title: str = '') -> str:
     return title[:160] if title else ''
 
 
+_DANGLING_ENDINGS = re.compile(
+    r'(을|를|이|가|은|는|도|만|와|과|의|에|서|로|으로|열려도|되어도|있어도|없어도|하면|보면|쓰면|되면|읽으면)$'
+)
+_RESULT_PRESENT = re.compile(
+    r'(된다|않는다|있다|없다|이다|한다|받는다|바뀐다|달라진다|줄어|커진다|생긴다|'
+    r'보인다|나온다|해결된다|사라진다|빨라진다|늘어난다|알게 된다|이유|방법|원리|비결|차이)'
+)
+
+
+def _fix_dangling_title(title: str, article: dict) -> str:
+    """끊긴 제목 감지 → 글감 topic + 본문 첫 문단에서 자동 수정."""
+    if not title:
+        return title
+
+    # 결과어가 이미 있으면 정상 제목
+    if _RESULT_PRESENT.search(title):
+        return title
+
+    # 끊긴 패턴 감지
+    if not _DANGLING_ENDINGS.search(title):
+        return title
+
+    # topic 기반 폴백 제목 생성
+    topic = article.get('topic', '') or article.get('_topic_data', {}).get('topic', '')
+    if topic:
+        # topic에서 특수문자·따옴표 제거, 42자 이내 정리
+        fixed = re.sub(r'[&\"\'\[\]<>（）【】「」]', '', topic).strip()
+        fixed = re.sub(r'\s+', ' ', fixed)[:42]
+        if fixed and fixed != title:
+            logger.warning(f"[제목 자동 수정] 끊긴 제목 감지: '{title}' → '{fixed}'")
+            return fixed
+
+    # topic도 없으면 본문 첫 h2를 제목으로
+    body = article.get('body', '')
+    h2s = re.findall(r'<h2>(.*?)</h2>', body, re.IGNORECASE | re.DOTALL)
+    if h2s:
+        fallback = re.sub(r'<[^>]+>', '', h2s[0]).strip()[:42]
+        if fallback and fallback != title:
+            logger.warning(f"[제목 자동 수정] 첫 H2로 대체: '{title}' → '{fallback}'")
+            return fallback
+
+    return title
+
+
 def sanitize_article_for_publish(article: dict) -> dict:
     sanitized = dict(article)
     if not sanitized.get('meta') and sanitized.get('meta_description'):
@@ -232,6 +276,7 @@ def sanitize_article_for_publish(article: dict) -> dict:
 
     if isinstance(sanitized.get('title'), str):
         sanitized['title'] = normalize_title_text(sanitized['title'])
+        sanitized['title'] = _fix_dangling_title(sanitized['title'], sanitized)
     if isinstance(sanitized.get('meta'), str):
         sanitized['meta_description'] = sanitized['meta']
 
