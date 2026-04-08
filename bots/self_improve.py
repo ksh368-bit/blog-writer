@@ -85,8 +85,41 @@ def extract_review_failures_from_log(log_path: Path, last_n_lines: int = 8000) -
     return failures
 
 
+def _extract_dynamic_patterns(sentences: list[str]) -> tuple[list[str], list[str]]:
+    """실패 문장에서 자주 등장하는 종결 어미와 시작 패턴을 동적으로 추출."""
+    ending_counter: Counter = Counter()
+    start_counter: Counter = Counter()
+
+    # 종결 어미 후보: 3~10자 어미 추출
+    _ENDING_SUFFIXES_RE = re.compile(
+        r'(라는 뜻이다|라는 의미다|라는 것이다|봐야 한다|셈이다|'
+        r'중요하다|필요하다|사실이다|것이다|셈이다|수밖에 없다|'
+        r'달라진다|바뀐다|올라간다|내려간다|늘어난다|줄어든다|'
+        r'인 셈이다|게 된다|이 된다)$'
+    )
+    # 문단 시작 전환 패턴: 5~15자
+    _START_TRANSITIONS_RE = re.compile(
+        r'^(이 차이는|이 변화는|이 과정은|이 상황은|이 기술은|이 구조는|'
+        r'결국 이|결국 이것|결국 문제|결국 핵심|바로 이|바로 여기|'
+        r'문제는 이|문제는 여기|여기서 중요|여기서 핵심|'
+        r'그래서 중요|그래서 핵심|그렇다면 왜|그렇다면 이)'
+    )
+
+    for sent in sentences:
+        m = _ENDING_SUFFIXES_RE.search(sent)
+        if m:
+            ending_counter[m.group(1)] += 1
+        m2 = _START_TRANSITIONS_RE.match(sent)
+        if m2:
+            start_counter[m2.group(1)] += 1
+
+    new_recap = [p for p, c in ending_counter.items() if c >= PATTERN_THRESHOLD]
+    new_transition = [p for p, c in start_counter.items() if c >= PATTERN_THRESHOLD]
+    return sorted(new_transition), sorted(new_recap)
+
+
 def detect_new_patterns(sentences: list[str]) -> tuple[list[str], list[str]]:
-    """실패 문장 목록에서 임계값 이상 반복되는 패턴 반환."""
+    """실패 문장 목록에서 임계값 이상 반복되는 패턴 반환 (고정 후보 + 동적 추출)."""
     counter: Counter = Counter()
     new_transition: set[str] = set()
     new_recap: set[str] = set()
@@ -107,6 +140,11 @@ def detect_new_patterns(sentences: list[str]) -> tuple[list[str], list[str]]:
                 counter[p] += 1
                 if counter[p] >= PATTERN_THRESHOLD:
                     new_transition.add(p)
+
+    # 동적 패턴 추출 병합
+    dyn_t, dyn_r = _extract_dynamic_patterns(sentences)
+    new_transition.update(dyn_t)
+    new_recap.update(dyn_r)
 
     return sorted(new_transition), sorted(new_recap)
 

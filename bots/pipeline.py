@@ -242,6 +242,64 @@ def _merge_pipeline_summary(total: dict, partial: dict) -> dict:
     return total
 
 
+def _save_unpublished_originals(articles: list[dict]) -> None:
+    """publisher_bot 로드 실패 시 원고를 originals/에 보존해 다음 실행에서 재발행 가능하게 함."""
+    import json
+    originals_dir = DATA_DIR / 'originals'
+    originals_dir.mkdir(parents=True, exist_ok=True)
+    for article in articles:
+        file_key = article.get('_file', '')
+        if file_key:
+            path = originals_dir / file_key
+        else:
+            from datetime import datetime
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            path = originals_dir / f'{ts}_unpublished.json'
+        if not path.exists():
+            path.write_text(json.dumps(article, ensure_ascii=False, indent=2), encoding='utf-8')
+            logger.info(f"[미발행 원고 보존] {path.name}")
+
+
+def _load_unpublished_originals() -> list[dict]:
+    """originals/에 있지만 published/ · pending_review/에 없는 원고를 반환 (발행 재시도 대상)."""
+    import json
+    originals_dir = DATA_DIR / 'originals'
+    published_dir = DATA_DIR / 'published'
+    pending_dir = DATA_DIR / 'pending_review'
+    if not originals_dir.exists():
+        return []
+
+    done_slugs: set[str] = set()
+    for d_dir in (published_dir, pending_dir):
+        if not d_dir or not d_dir.exists():
+            continue
+        for f in d_dir.glob('*.json'):
+            try:
+                d = json.loads(f.read_text(encoding='utf-8'))
+                slug = d.get('slug', '') or d.get('title', '')
+                if slug:
+                    done_slugs.add(slug)
+            except Exception:
+                pass
+
+    # 오늘 생성된 원고만 재시도 (최근 10개, 오늘 날짜 파일)
+    from datetime import date
+    today_prefix = date.today().strftime('%Y%m%d')
+    unpublished = []
+    for f in sorted(originals_dir.glob(f'{today_prefix}_*.json'), reverse=True)[:10]:
+        try:
+            d = json.loads(f.read_text(encoding='utf-8'))
+            slug = d.get('slug', '') or d.get('title', '')
+            if slug and slug not in done_slugs:
+                d['_file'] = f.name
+                unpublished.append(d)
+        except Exception:
+            pass
+    if unpublished:
+        logger.info(f"[미발행 원고] originals에서 {len(unpublished)}편 재발행 시도")
+    return unpublished
+
+
 def step_publish(articles: list[dict], summarize: bool = True) -> dict:
     logger.info("─── 3단계: 발행 ───")
     try:
@@ -249,6 +307,7 @@ def step_publish(articles: list[dict], summarize: bool = True) -> dict:
         import bots.writer_bot as writer_bot
     except Exception as e:
         logger.error(f"publisher_bot 로드 실패: {e}")
+        _save_unpublished_originals(articles)
         return {}
 
     summary = {
@@ -336,6 +395,12 @@ def main():
                 f"⚠️ <b>{args.slot} 발행 자동화 실패</b>\n\n코너: {args.corner}\n단계: 수집\n사유: 글감 수집 실패"
             )
             sys.exit(1)
+
+    # 1.5단계: 미발행 원고 재발행 시도 (이전 실행에서 publisher_bot 오류로 누락된 원고)
+    if not args.skip_publish and not args.topic:
+        unpublished = _load_unpublished_originals()
+        if unpublished:
+            step_publish(unpublished)
 
     # 2단계: 글 작성 / 3단계: 발행
     if args.skip_publish or args.topic:
