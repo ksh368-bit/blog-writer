@@ -281,48 +281,16 @@ def step_publish(articles: list[dict], summarize: bool = True) -> dict:
                 summary['reason_counts'][reason] = int(summary['reason_counts'].get(reason, 0)) + 1
                 writer_bot.register_pipeline_feedback(
                     article.get('corner', '전체'),
-                    f'- 발행 단계 자동 게이트 실패: {reason}',
+                    f'- 발행 단계 자동 게이트 실패 (수동 검토로 저장): {reason}',
                     success=False,
                 )
-                logger.warning(f"발행 품질 게이트 재작성 요청: {title} — {reason}")
-                topic_data = article.get('_topic_data') or {
-                    'topic': article.get('topic', title),
-                    'corner': article.get('corner', '쉬운세상'),
-                    'description': article.get('description', ''),
-                    'source': article.get('source', ''),
-                    'source_url': article.get('source_url', ''),
-                    'published_at': article.get('published_at', ''),
-                    'quality_score': article.get('quality_score', 0),
-                }
-                output_path = Path(article.get('_output_path') or (DATA_DIR / 'originals' / f"{article.get('slug','retry')}.json"))
-                rewritten = writer_bot.write_article(
-                    topic_data,
-                    output_path,
-                    skip_review=False,
-                    initial_feedback=_build_publish_retry_feedback(reason),
-                )
-                rewritten['_output_path'] = str(output_path)
-                rewritten['_topic_data'] = topic_data
-                retry_success, retry_reason = publisher_bot.publish_with_result(rewritten)
-                if retry_success:
-                    summary['retried_then_published'] += 1
-                    summary['success_titles'].append(rewritten.get('title', title))
-                    writer_bot.register_pipeline_feedback(
-                        rewritten.get('corner', '전체'),
-                        f'- 발행 단계 피드백을 반영하자 자동 발행 기준을 넘겼다: {rewritten.get("title", title)}',
-                        success=True,
-                    )
-                    logger.info(f"재작성 후 발행 완료: {rewritten.get('title', title)}")
-                else:
-                    summary['manual_review'] += 1
-                    summary['reason_counts'][retry_reason] = int(summary['reason_counts'].get(retry_reason, 0)) + 1
-                    writer_bot.register_pipeline_feedback(
-                        rewritten.get('corner', '전체'),
-                        f'- 재작성 후에도 발행 단계에서 막혔다: {retry_reason}',
-                        success=False,
-                    )
-                    publisher_bot.save_pending_review(rewritten, retry_reason)
-                    logger.warning(f"재작성 후에도 수동 검토 대기: {rewritten.get('title', title)} — {retry_reason}")
+                # ── Fix: 동일 글감 재작성 무한 루프 방지 ──────────────────────────
+                # 기존: 같은 출처 데이터로 write_article 재호출 → 동일한 실패 반복
+                # 변경: pending_review에 저장하고 해당 글감은 종료
+                # 이유: 출처 데이터 품질이 낮으면 재작성해도 동일 문제 발생,
+                #       토큰 예산만 소진되고 발행도 안 되는 데드락 발생
+                publisher_bot.save_pending_review(article, reason)
+                logger.warning(f"품질 게이트 차단 — 수동 검토 저장 (재작성 루프 방지): {title} — {reason}")
             else:
                 summary['manual_review'] += 1
                 summary['reason_counts'][reason] = int(summary['reason_counts'].get(reason, 0)) + 1

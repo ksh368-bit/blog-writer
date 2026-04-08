@@ -1218,8 +1218,14 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
                     # 룰 기반 제목 검사 (AI 호출 없이) — 예산 초과라도 제목 품질은 확인
                     _r4_ok, _r4_fb = _presentation_review(article)
                     _r4b_ok, _r4b_fb = _title_actionability_review(article)
-                    if not _r4_ok or not _r4b_ok:
-                        _title_issues = '\n'.join(filter(None, [_r4_fb, _r4b_fb]))
+                    _has_review_issues = not _r4_ok or not _r4b_ok
+                    _title_issues = '\n'.join(filter(None, [_r4_fb, _r4b_fb]))
+                    # ── Fix: 토큰 예산 초과 강제 발행 시 품질 점수 명시 ───────────
+                    # quality_score가 없으면 topic_data에서 가져와 article에 기록
+                    # publisher_bot quality_gate(75점)가 올바르게 차단할 수 있도록
+                    if not article.get('quality_score'):
+                        article['quality_score'] = topic_data.get('quality_score', 0)
+                    if _has_review_issues:
                         logger.warning(
                             f"[시도 {attempt}] 토큰 예산 초과 + 제목/표현 검수 미달 "
                             f"— 강제 발행 (미해결):\n{_title_issues}"
@@ -1268,6 +1274,21 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
                 continue
 
             consecutive_empty = 0  # 응답 있으면 초기화
+
+            # ── Fix: AI가 글 대신 정보 요청/질문을 반환하는 패턴 조기 감지 ──────
+            # 증상: 출처 데이터가 기사 제목 수준일 때 Claude가 글 대신 질문 반환
+            # 대응: 1~2시도 안에 감지해서 WriteBlockedError → 다음 글감으로 넘김
+            _INFO_REQUEST_SIGNALS = (
+                '정보를 먼저 주시면', '아래 정보를 주시면', '다음 정보가 필요합니다',
+                '더 많은 정보가', '출처가 부족', '정확한 정보가 없어', '정보가 불충분',
+                '확인이 필요합니다', '정확히 알 수 없어', 'WebFetch 권한',
+                '다음을 알려주시면', '먼저 알려주시면',
+            )
+            if attempt <= 2 and any(sig in raw_output for sig in _INFO_REQUEST_SIGNALS):
+                raise WriteBlockedError(
+                    f'[시도 {attempt}] 출처 정보 불충분 — AI가 글 대신 정보 요청 반환. '
+                    '글감 출처가 기사 제목 수준이므로 다음 글감으로 넘김'
+                )
 
             parsed = parse_output(raw_output)
             if not parsed:
