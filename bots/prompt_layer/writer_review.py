@@ -351,6 +351,47 @@ def presentation_review(
             '첫 등장 때 괄호 안에 한국어 풀이를 추가하라. 예: "LHC(대형 강입자 충돌기)".'
         )
 
+    # Q5: 본문 최소 텍스트 길이 검사 — 공백 제거 기준 600자 미만이면 독자가 읽기에 너무 짧음
+    _plain_no_space = re.sub(r'\s', '', re.sub(r'<[^>]+>', '', body))
+    if len(_plain_no_space) < 600:
+        issues.append(
+            f'- 본문 텍스트가 너무 짧다 ({len(_plain_no_space)}자). '
+            '한국 독자가 읽기에 충분한 분량인 최소 600자 이상으로 써야 한다.'
+        )
+
+    # Q6: 구체적 수치 포함 필수 — 퍼센트·금액·날짜·배수·횟수 등 최소 2개
+    _NUMBER_RE = re.compile(
+        r'[0-9]+[%％]|'
+        r'[0-9]+\.?[0-9]*[원달러억만천백]|'
+        r'[0-9]{4}년|'
+        r'[0-9]+배|'
+        r'[0-9]+개|[0-9]+명|'
+        r'[0-9]+초|[0-9]+분|[0-9]+시간|[0-9]+주|[0-9]+달|[0-9]+월'
+    )
+    _concrete_numbers = _NUMBER_RE.findall(plain_body)
+    if len(_concrete_numbers) < 2:
+        issues.append(
+            f'- 본문에 구체적인 수치가 부족하다 ({len(_concrete_numbers)}개). '
+            '퍼센트, 금액, 날짜, 횟수 등 숫자를 최소 2개 이상 포함해 독자가 실감할 수 있게 해라. '
+            '예: "3.4%", "500원", "2주", "4월"'
+        )
+
+    # Q7: 연속 긴 문장 리듬 검사 — 65자 초과 문장이 3개 이상 연속되면 모바일 가독성 파괴
+    _rhythm_sentences = split_sentences(re.sub(r'<[^>]+>', ' ', body))
+    _consec_long = 0
+    _max_consec_long = 0
+    for _rs in _rhythm_sentences:
+        if len(_rs.strip()) > 65:
+            _consec_long += 1
+            _max_consec_long = max(_max_consec_long, _consec_long)
+        else:
+            _consec_long = 0
+    if _max_consec_long >= 3:
+        issues.append(
+            f'- 65자 초과 긴 문장이 {_max_consec_long}개 연속된다. '
+            '모바일 독자를 위해 짧은 문장(30자 내외)을 사이사이에 넣어 읽기 리듬을 살려라.'
+        )
+
     if issues:
         return False, '\n'.join(dict.fromkeys(issues))
     return True, ''
