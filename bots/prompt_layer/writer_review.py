@@ -443,6 +443,54 @@ def presentation_review(
             '모바일 독자를 위해 짧은 문장(30자 내외)을 사이사이에 넣어 읽기 리듬을 살려라.'
         )
 
+    # Q10: 추측 표현 남용 감지 — "것 같다/듯하다/것으로 보인다" 3개+ 반복 시 신뢰도 하락
+    # 한국 인기 블로그 연구: 추측 어미 남발은 글의 신뢰도를 크게 떨어뜨림
+    _HEDGING_RE = re.compile(
+        r'것 같다|것 같습니다|인 것 같다|인 것 같습니다|'
+        r'인 듯하다|인 듯합니다|[가-힣] 듯하다|[가-힣] 듯합니다|'
+        r'것으로 보인다|것으로 보입니다|'
+        r'할 것 같다|할 것 같습니다|'
+        r'[가-힣] 것 같다|[가-힣] 것 같습니다'
+    )
+    _plain_body_q10 = re.sub(r'<[^>]+>', '', body)
+    _hedging_matches = _HEDGING_RE.findall(_plain_body_q10)
+    if len(_hedging_matches) >= 3:
+        issues.append(
+            f'- 추측 표현이 {len(_hedging_matches)}회 반복된다 ({_hedging_matches[0]!r} 등). '
+            '"것 같다", "듯하다", "것으로 보인다" 등 추측 어미를 남발하면 독자 신뢰도가 떨어진다. '
+            '확인 가능한 사실·수치·경험으로 교체하고, 추측이 필요하면 1~2개로 제한해라.'
+        )
+
+    # Q11: 과도하게 긴 단락 금지 — 200자 초과 단락 2개 이상이면 모바일 가독성 파괴
+    # 브런치·네이버 인기 글 연구: 단락 길이가 너무 길면 독자 이탈
+    _long_paragraph_count = sum(
+        1 for p in _all_p
+        if len(re.sub(r'<[^>]+>', '', p).strip()) > 200
+    )
+    if _long_paragraph_count >= 2:
+        issues.append(
+            f'- 긴 단락이 {_long_paragraph_count}개다. '
+            '200자 초과 단락은 모바일 독자가 읽기 힘들다. '
+            '각 단락을 3~5문장(100~150자) 안으로 쪼개라.'
+        )
+
+    # Q12: 동일 종결어미 과반복 금지 — "할 수 있다/수 있습니다" 4회+ 반복 시 단조로운 리듬 경고
+    # 한국어 글쓰기 연구: 같은 어미가 반복되면 리듬이 단조로워져 독자 이탈
+    _ENDING_PATTERNS = [
+        (re.compile(r'할 수 있다'), '할 수 있다'),
+        (re.compile(r'수 있습니다'), '수 있습니다'),
+    ]
+    _plain_body_q12 = re.sub(r'<[^>]+>', '', body)
+    for _ending_re, _ending_label in _ENDING_PATTERNS:
+        _ending_count = len(_ending_re.findall(_plain_body_q12))
+        if _ending_count >= 4:
+            issues.append(
+                f'- 종결 표현 "{_ending_label}"이 {_ending_count}회 반복된다. '
+                '같은 어미가 반복되면 글 리듬이 단조로워진다. '
+                '"된다", "이다", "있다", "달라진다" 등 다양한 어미로 교체해라.'
+            )
+            break  # 하나만 감지해도 충분
+
     if issues:
         return False, '\n'.join(dict.fromkeys(issues))
     return True, ''
