@@ -3,6 +3,7 @@ bots/prompt_layer/writer_review.py
 Fact review prompt and heuristic rule constants for writer reviews.
 """
 
+import datetime
 import json
 import re
 from pathlib import Path
@@ -240,10 +241,59 @@ def presentation_review(
                     '검색에서 찾히려면 브랜드명·서비스명 등 이 글만의 핵심 키워드가 제목에 들어가야 한다.'
                 )
 
-    if title and len(title) > 42:
-        issues.append(f'- "{title}" → 제목이 너무 길어 목록/공유 화면 가독성이 떨어진다.')
+    if title and len(title) > 38:
+        issues.append(
+            f'- "{title}" → 제목이 {len(title)}자로 너무 길다. '
+            '모바일 Google 검색 결과 38자 이후는 잘린다. '
+            '38자 이하로 줄이되 손실·숫자·방법 패턴은 유지해라.'
+        )
     if title and len(title) < 15:
         issues.append(f'- "{title}" → 제목이 너무 짧다 ({len(title)}자). 글감의 핵심 키워드와 행동/결과를 담아 15자 이상으로 써라.')
+
+    # QT6: Freshness 신호 — 금융·정책 시의성 주제면 제목에 현재 연도 포함 권장
+    _TIMELY_TOPICS = re.compile(
+        r'(금리|물가|환율|수출|주가|코스피|부동산|대출|청약|세금|정책|지원금|보조금|개정|개편)'
+    )
+    if title and _TIMELY_TOPICS.search(article.get('topic', '') or title):
+        _CURRENT_YEAR = datetime.datetime.now().year
+        _YEAR_IN_TITLE = re.compile(r'20[2-9][0-9]년?')
+        if not _YEAR_IN_TITLE.search(title):
+            issues.append(
+                f'- "{title}" → 시의성 주제인데 제목에 연도가 없다. '
+                f'"{_CURRENT_YEAR}년 금리 변화 대비법"처럼 현재 연도를 포함하면 Google CTR이 높아진다.'
+            )
+
+    # QT1: 제목 클릭 유발 패턴 검사 (조회수 1만+ 분석 기반)
+    if title:
+        _LOSS_FRAME     = re.compile(r'(안 하면|모르면|못하면|안 받으면|이거 모르면|하지 않으면)')
+        _NUMBER_TITLE   = re.compile(r'[0-9]+\s*(가지|개|초|원|배|번|단계|분|주|달|년|위|명|억|만원)')
+        _REVERSE_TITLE  = re.compile(r'(하지 마세요|신청하지 마|사지 마세요|쓰지 마세요)')
+        _QUESTION_TITLE = re.compile(r'[?？]|왜\s|어떻게\s|얼마나\s')
+        _HOW_TO_TITLE   = re.compile(r'(방법|하는 법|가이드|전략|비결|공식|원리|이유)')
+        _ACTION_RESULT  = re.compile(
+            r'[가-힣]{2,}면.{0,20}(된다|줄어든다|달라진다|빨라진다|쉬워진다|낸다|바뀐다|오른다|내린다|늘어난다)'
+        )
+        if not any(p.search(title) for p in [
+            _LOSS_FRAME, _NUMBER_TITLE, _REVERSE_TITLE, _QUESTION_TITLE, _HOW_TO_TITLE, _ACTION_RESULT
+        ]):
+            issues.append(
+                f'- "{title}" → 제목에 클릭 유발 패턴 없음. '
+                '①손실 프레임("이거 안 하면 손해"), ②숫자("5가지","3초"), '
+                '③역발상("하지 마세요"), ④질문("왜~?"), ⑤방법("하는 법") 중 하나 포함 필수.'
+            )
+
+    # QT2: 제목 내 핵심 키워드 위치 검사 (Google 스니펫 최적화)
+    if title and len(title) > 20:
+        _topic_words = re.findall(r'[가-힣a-zA-Z0-9]{2,}', article.get('topic', ''))
+        _STOP_TITLE_WORDS = {'이', '가', '을', '를', '의', '은', '는', '와', '과', '도', '에', '서'}
+        _kw_candidates = [w for w in _topic_words if w not in _STOP_TITLE_WORDS]
+        if _kw_candidates:
+            title_start = title[:min(15, len(title))]
+            if not any(kw in title_start for kw in _kw_candidates):
+                issues.append(
+                    f'- "{title}" → 핵심 키워드가 제목 뒷부분에 있다. '
+                    'Google 검색 스니펫은 제목 앞 30자를 강조 표시하므로 핵심 키워드를 앞으로 이동해라.'
+                )
 
     # Q1: 목차 섹션 감지 — Wikipedia처럼 보이고 도입부 흡입력을 죽임
     if re.search(r'<h[23][^>]*>\s*목차\s*</h[23]>', body, re.IGNORECASE):
@@ -310,6 +360,16 @@ def presentation_review(
                 f'- "{plain}" → 섹션 제목이 결론을 미리 말해버린다. '
                 '독자 호기심을 죽이는 패턴이다. '
                 '"왜 ~할까", "~이 다른 이유", "~하는 구조"처럼 궁금증을 유발하는 형태로 바꿔라.'
+            )
+        # QC2: 추상 H2 경고 — Google 섹션 색인에 무기여
+        _ABSTRACT_H2_TERMS = re.compile(
+            r'^(소개|개요|배경|현황|정리|마무리|결론|요약|들어가며|시작하며|왜 중요한가|무엇인가)$'
+        )
+        if _ABSTRACT_H2_TERMS.match(plain):
+            issues.append(
+                f'- "{plain}" → 추상적인 H2 제목이다. '
+                'Google 섹션 색인에 무기여. '
+                '"왜 ~할까", "~이 다른 이유", "~하는 구조"처럼 검색 키워드가 담긴 형태로 바꿔라.'
             )
 
     if body.count('<strong>') < max(2, len(h2_texts)):
@@ -404,13 +464,40 @@ def presentation_review(
             '숫자·고유명사·사례로 바로 시작해라.'
         )
 
-    # Q5: 본문 최소 텍스트 길이 검사 — 공백 제거 기준 600자 미만이면 독자가 읽기에 너무 짧음
+    # Q5: 본문 최소 텍스트 길이 검사 — 공백 제거 기준 900자 미만이면 독자가 읽기에 너무 짧음
     _plain_no_space = re.sub(r'\s', '', re.sub(r'<[^>]+>', '', body))
-    if len(_plain_no_space) < 600:
+    if len(_plain_no_space) < 900:
         issues.append(
             f'- 본문 텍스트가 너무 짧다 ({len(_plain_no_space)}자). '
-            '한국 독자가 읽기에 충분한 분량인 최소 600자 이상으로 써야 한다.'
+            '조회수 1만+ 블로그 기준 최소 900자 (목표 1,500자 이상)이어야 한다.'
         )
+
+    # QS1: 스캔가능성 — 목록 요소 없음 경고
+    if not re.search(r'<(ul|ol|table)\b', body, re.IGNORECASE):
+        issues.append(
+            '- 본문에 목록(<ul>/<ol>) 또는 표(<table>)가 없다. '
+            '모바일 독자는 목록 구조가 있는 글에서 체류시간이 길다. '
+            '비교 항목·단계·기준·체크리스트 중 하나를 목록으로 표현해라.'
+        )
+
+    # QK1: 키워드 밀도 — topic 핵심어의 과반이 본문에 2회 미만이면 Google 주제 신호 부족
+    _topic = article.get('topic', '')
+    if _topic:
+        _STOP_KW = {
+            '현황', '전망', '이유', '방법', '결과', '분석', '정리', '소식', '내용',
+            '상황', '문제', '효과', '기준', '종류', '특징', '차이', '비교', '활용',
+        }
+        _topic_kws = [w for w in re.findall(r'[가-힣]{2,}|[A-Za-z0-9]{3,}', _topic)
+                      if w not in _STOP_KW]
+        _topic_kws = list(dict.fromkeys(_topic_kws))[:4]
+        if _topic_kws:
+            _body_plain = re.sub(r'<[^>]+>', '', body)
+            _under = [kw for kw in _topic_kws if _body_plain.count(kw) < 2]
+            if len(_under) > len(_topic_kws) // 2:
+                issues.append(
+                    f'- 핵심 키워드 {_under[:3]}이(가) 본문에 1회 이하 등장한다. '
+                    'Google 주제 신호를 위해 핵심 키워드를 본문에 자연스럽게 2~3회 배치해라.'
+                )
 
     # Q6: 구체적 수치 포함 필수 — 퍼센트·금액·날짜·배수·횟수 등 최소 2개
     _NUMBER_RE = re.compile(
@@ -522,8 +609,33 @@ def structure_review(
         ):
             issues.append('- 첫 문단이 글의 핵심을 너무 늦게 말한다. 독자가 바로 주제를 잡을 수 있어야 한다.')
 
+    # QB1: 도입부 훅 타입 검사 (충격 수치 / 역설 질문 / 생생한 장면)
+    if paragraphs:
+        _first_p_text = re.sub(r'<[^>]+>', '', paragraphs[0])
+        _SHOCK_STAT  = re.compile(r'[0-9]+\s*[%％배원억만초분주달년개명]')
+        _PARADOX_Q   = re.compile(r'(인데|인데도|지만|해도).{1,20}(왜|이상|역설|모순)|[?？]')
+        _VIVID_SCENE = re.compile(
+            r'(아침|출근|퇴근|점심|저녁|새벽|회의|터미널|노트북|화면|클릭|입력|열었|켰|봤더니|했더니|'
+            r'통장|월급|이자|주식|배당|대출|적금|예금|청구서|연금|보험|가계)'
+        )
+        if not (_SHOCK_STAT.search(_first_p_text) or _PARADOX_Q.search(_first_p_text) or _VIVID_SCENE.search(_first_p_text)):
+            issues.append(
+                '- 도입부에 독자를 잡아끄는 훅 타입이 없다. '
+                '①충격 수치("한 달 만에 3배"), ②역설 질문("잘 팔렸는데 왜 손실?"), '
+                '③생생한 장면("아침에 노트북을 열었더니") 중 하나로 시작해라.'
+            )
+
     if corner == '쉬운세상':
-        relatable_markers = ('아침', '출근', '회의', '노트북', '맥북', '화면', '탭', '로그', '폴더', '퇴근', '브라우저')
+        relatable_markers = (
+            # 기술/업무 장면
+            '아침', '출근', '회의', '노트북', '맥북', '화면', '탭', '로그', '폴더', '퇴근', '브라우저',
+            # 금융/일상 생활 장면
+            '통장', '월급', '이자', '주식', '배당', '대출', '적금', '예금', '청구서', '연금', '보험',
+            '주식 앱', '월급날', '가계',
+            # 에너지/교통/소비 생활 장면
+            '주유소', '기름값', '가스비', '택시', '배달', '전기요금', '난방비', '물가',
+            '장바구니', '마트', '편의점', '카페', '식비', '공과금',
+        )
         relatable_paragraphs = [
             p for p in paragraphs
             if any(marker in re.sub(r'<[^>]+>', '', p) for marker in relatable_markers)
@@ -536,7 +648,12 @@ def structure_review(
         last_action, last_result = has_action_result_shape(last_paragraph)
         if not (
             last_action
-            or any(token in last_paragraph for token in ('고르면', '선택', '정하면', '먼저 보면', '기준'))
+            or any(token in last_paragraph for token in (
+                '고르면', '선택', '정하면', '먼저 보면', '기준',          # 선택 기반 (기존)
+                '지금', '바로', '오늘', '이번 달', '당장',                 # 시간 기반
+                '안 하면', '모르면', '못하면',                              # 손실 기반
+                '먼저 해보', '확인해보', '써보면', '해보면',               # 행동 즉시성
+            ))
             or last_result
         ):
             issues.append('- 마지막 문단이 독자 행동 기준으로 닫히지 않는다. "그래서 뭘 고르면 되는지"가 남아야 한다.')
