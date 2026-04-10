@@ -1279,3 +1279,208 @@ class TestFreshnessSignal:
         if '연도' in msg:
             # 메시지에 연도가 있으면 현재 연도여야 함
             assert current_year in msg, f"하드코딩 연도 의심 — 현재 연도({current_year})가 없음: {msg}"
+
+
+# ──────────────────────────────────────────────────────────────
+# QP1: 플레이스홀더 앱명 감지 (e.g. "Blank." 패턴)
+# ──────────────────────────────────────────────────────────────
+
+class TestPlaceholderAppName:
+    """제목·본문에 'Word. 한국어' 형태의 플레이스홀더처럼 보이는 앱명이 있으면 경고"""
+
+    def _review(self, article):
+        from bots.prompt_layer.writer_review import presentation_review
+        split_sentences = lambda t: re.split(r'(?<=[.!?다])\s', t)
+        return presentation_review(article, raw_term_replacements={}, split_sentences=split_sentences)
+
+    def _base_article(self, title, body=None, topic=None):
+        default_body = (
+            '<h2>Gemma 모델 비교 분석</h2>'
+            '<p>Gemma 4 모델은 Google이 2026년에 출시한 오픈소스 LLM이다. '
+            '기존 Gemma 3보다 성능이 크게 향상되어 많은 개발자들이 주목하고 있다. '
+            '특히 한국어 처리 능력이 개선되어 한국어 서비스에 활용하기 좋다.</p>'
+            '<ul><li>Gemma 4 매개변수: 27B</li><li>Gemma 3 대비 성능 향상: 약 30%</li>'
+            '<li>지원 언어: 한국어 포함 140개 언어</li></ul>'
+            '<h2>Gemma 4 성능 벤치마크 결과</h2>'
+            '<p>벤치마크 테스트에서 Gemma 4는 기존 모델 대비 우수한 성능을 보였다. '
+            'MMLU 점수는 87.3점으로 동급 오픈소스 모델 중 최상위권이다. '
+            '특히 수학 및 코딩 능력이 크게 개선된 것이 특징이다.</p>'
+            '<p>실제 사용 시나리오에서도 Gemma 4의 강점이 드러난다. '
+            '응답 속도는 평균 0.8초로 실시간 서비스에 적합하다. '
+            '메모리 효율도 개선되어 4GB GPU에서도 실행 가능하다.</p>'
+            '<p>Gemma 4를 실제 프로젝트에 적용한 결과 생산성이 향상되었다. '
+            '코드 리뷰 시간이 40% 단축되었고 버그 발견율도 높아졌다. '
+            '팀 전체의 개발 속도가 빨라지는 효과를 얻었다.</p>'
+            '<h2>선택 기준 정리</h2>'
+            '<p>Gemma 4 모델 선택 시 핵심 기준을 정리하면 다음과 같다. '
+            '먼저 목적에 맞는 모델 크기를 선택해야 한다. '
+            'Gemma 4 27B는 고품질 출력이 필요한 작업에 적합하다.</p>'
+        )
+        return {
+            'title': title,
+            'body': body or default_body,
+            'meta': 'Gemma 4 전환 후 영단어 앱의 정답 중복 버그가 사라진 이유를 분석한다.',
+            'topic': topic or 'Gemma 4 모델 비교 성능',
+        }
+
+    def _qp1_issues(self, msg):
+        return [l for l in msg.split('\n') if '앱명' in l]
+
+    def test_title_with_word_dot_pattern_triggers_warning(self):
+        """제목에 'Word. 한국어' 패턴(플레이스홀더 의심) → QP1 경고"""
+        article = self._base_article(title='Blank. 정답이 자꾸 같다면')
+        ok, msg = self._review(article)
+        assert self._qp1_issues(msg), f"QP1 경고 없음: {msg}"
+
+    def test_title_with_real_app_name_no_warning(self):
+        """정상 제목(앱명 없이) → QP1 경고 없음"""
+        article = self._base_article(
+            title='Gemma 4 전환 후 영단어 앱 정답 5개 중복 버그가 사라진 이유'
+        )
+        ok, msg = self._review(article)
+        assert not self._qp1_issues(msg), f"QP1 오탐: {msg}"
+
+    def test_body_with_word_dot_korean_triggers_warning(self):
+        """본문에 'Word. 한국어' 패턴 → QP1 경고"""
+        body_with_placeholder = (
+            '<h2>Gemma 모델 분석</h2>'
+            '<p>Blank. 앱은 영단어 학습을 돕는다. Gemma 4 기반으로 동작한다.</p>'
+            '<ul><li>Gemma 4 성능: 우수</li><li>지원 언어: 다수</li></ul>'
+            '<h2>Gemma 4 성능 결과</h2>'
+            '<p>Gemma 4 벤치마크에서 높은 점수를 기록했다. 성능이 뛰어난 모델이다.</p>'
+            '<p>Gemma 4를 사용하면 효율이 높아진다. 실제 테스트에서 확인되었다.</p>'
+            '<p>세 번째 단락이다. 추가 설명을 제공한다.</p>'
+            '<p>네 번째 단락이다. 더 많은 내용을 담고 있다.</p>'
+            '<p>다섯 번째 단락이다. 핵심 내용을 강조한다.</p>'
+            '<h2>선택 기준</h2>'
+            '<p>Gemma 4 선택 시 고려할 기준을 정리했다. 성능과 비용을 함께 고려해야 한다.</p>'
+        )
+        article = self._base_article(
+            title='Gemma 4 기반 영단어 앱 버그 해결 방법 3가지',
+            body=body_with_placeholder,
+        )
+        ok, msg = self._review(article)
+        assert self._qp1_issues(msg), f"QP1 본문 경고 없음: {msg}"
+
+    def test_legitimate_english_no_warning(self):
+        """정상 영어가 제목에 있어도 'Word. 한국어' 패턴이 아니면 경고 없음"""
+        article = self._base_article(
+            title='Gemma 4 성능 비교 이유와 선택 기준 3가지'
+        )
+        ok, msg = self._review(article)
+        assert not self._qp1_issues(msg), f"QP1 오탐(정상 영문): {msg}"
+
+# ──────────────────────────────────────────────────────────────
+# 재발방지: check_safety QP1 게이트
+# ──────────────────────────────────────────────────────────────
+
+class TestPublisherQP1Gate:
+    """check_safety()가 'Word. 한국어' 패턴 제목을 수동 검토로 보낸다."""
+
+    def _safety_cfg(self):
+        return {
+            'always_manual_review': ['팩트체크'],
+            'crypto_keywords': [], 'criticism_keywords': [],
+            'investment_keywords': [], 'legal_keywords': [],
+            'criticism_phrases': [],
+            'min_sources_required': 0,
+            'min_quality_score_for_auto': 0,
+        }
+
+    def _good_article(self, title: str, body: str = '') -> dict:
+        return {
+            'title': title,
+            'corner': '쉬운세상',
+            'body': body or '<h2>소개</h2><p>본문입니다.</p>',
+            'sources': [],
+            'quality_score': 100,
+        }
+
+    def test_word_dot_title_triggers_manual_review(self):
+        """'Word. 한국어' 제목 → check_safety가 needs_review=True 반환"""
+        from bots.publisher_bot import check_safety
+        article = self._good_article('Blank. 정답이 자꾸 같다면 의심할 점 3가지')
+        needs_review, reason = check_safety(article, self._safety_cfg())
+        assert needs_review is True, f"QP1 제목 자동 발행됨: reason={reason}"
+        assert '앱명' in reason, f"이유에 '앱명' 없음: {reason}"
+
+    def test_word_dot_body_triggers_manual_review(self):
+        """본문에 'Word. 한국어' 패턴 → check_safety가 needs_review=True 반환"""
+        from bots.publisher_bot import check_safety
+        body = '<h2>소개</h2><p>Blank. 앱은 영단어 학습을 돕는다.</p>'
+        article = self._good_article('영단어 앱 버그 해결 방법 3가지', body=body)
+        needs_review, reason = check_safety(article, self._safety_cfg())
+        assert needs_review is True, f"QP1 본문 자동 발행됨: reason={reason}"
+        assert '앱명' in reason, f"이유에 '앱명' 없음: {reason}"
+
+    def test_normal_title_with_english_passes(self):
+        """정상 영어 포함 제목 → QP1 오탐 없음"""
+        from bots.publisher_bot import check_safety
+        article = self._good_article('Gemma 4 전환 후 버그가 사라진 이유 3가지')
+        needs_review, reason = check_safety(article, self._safety_cfg())
+        assert needs_review is False or '앱명' not in reason, \
+            f"QP1 오탐: reason={reason}"
+
+# ──────────────────────────────────────────────────────────────
+# 재발방지: approve_pending QP1 경고
+# ──────────────────────────────────────────────────────────────
+
+class TestApprovePendingQP1Warning:
+    """approve_pending()이 QP1 패턴 발견 시 Telegram 경고를 보낸다."""
+
+    def test_approve_pending_warns_on_qp1_pattern(self, tmp_path):
+        """QP1 패턴 있는 pending 파일 승인 시 Telegram 경고 전송"""
+        import json
+        from unittest.mock import patch, MagicMock
+
+        pending_file = tmp_path / 'pending.json'
+        pending_file.write_text(json.dumps({
+            'title': 'Blank. 정답이 자꾸 같다면',
+            'body': '<h2>소개</h2><p>Blank. 앱은 영단어 학습을 돕는다.</p>',
+            'meta': '테스트 메타 설명.',
+            'sources': [],
+            'quality_score': 80,
+            'corner': '쉬운세상',
+        }), encoding='utf-8')
+
+        with patch('bots.publisher_bot.publish_to_blogger') as mock_pub, \
+             patch('bots.publisher_bot.get_google_credentials'), \
+             patch('bots.publisher_bot.send_telegram') as mock_tg, \
+             patch('bots.publisher_bot.log_published'), \
+             patch('bots.publisher_bot.submit_to_search_console'):
+            mock_pub.return_value = {'url': 'http://example.com/test', 'id': '123'}
+            from bots.publisher_bot import approve_pending
+            approve_pending(str(pending_file))
+
+        # 텔레그램으로 경고 메시지가 전송되어야 함
+        calls = [str(c) for c in mock_tg.call_args_list]
+        warning_sent = any('앱명' in c or 'QP1' in c or '플레이스홀더' in c for c in calls)
+        assert warning_sent, f"QP1 경고 Telegram 미전송. 호출: {calls}"
+
+    def test_approve_pending_no_warning_for_normal_article(self, tmp_path):
+        """정상 제목 pending 승인 시 QP1 경고 없음"""
+        import json
+        from unittest.mock import patch
+
+        pending_file = tmp_path / 'pending.json'
+        pending_file.write_text(json.dumps({
+            'title': 'Gemma 4 전환 후 버그가 사라진 이유 3가지',
+            'body': '<h2>소개</h2><p>Gemma 4로 전환한 후 문제가 해결됐다.</p>',
+            'meta': '정상 메타 설명이다.',
+            'sources': [],
+            'quality_score': 80,
+            'corner': '쉬운세상',
+        }), encoding='utf-8')
+
+        with patch('bots.publisher_bot.publish_to_blogger') as mock_pub, \
+             patch('bots.publisher_bot.get_google_credentials'), \
+             patch('bots.publisher_bot.send_telegram') as mock_tg, \
+             patch('bots.publisher_bot.log_published'), \
+             patch('bots.publisher_bot.submit_to_search_console'):
+            mock_pub.return_value = {'url': 'http://example.com/test', 'id': '123'}
+            from bots.publisher_bot import approve_pending
+            approve_pending(str(pending_file))
+
+        calls = [str(c) for c in mock_tg.call_args_list]
+        qp1_warning = any('앱명' in c or 'QP1' in c for c in calls)
+        assert not qp1_warning, f"QP1 오탐 경고 전송됨: {calls}"

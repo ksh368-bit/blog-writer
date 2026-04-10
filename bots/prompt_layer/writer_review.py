@@ -241,6 +241,16 @@ def presentation_review(
                     '검색에서 찾히려면 브랜드명·서비스명 등 이 글만의 핵심 키워드가 제목에 들어가야 한다.'
                 )
 
+    # QP1: 플레이스홀더 앱명 감지 — 'Word. 한국어' 패턴 (영어 단어 + 마침표 + 공백 + 한국어)
+    _PLACEHOLDER_APP = re.compile(r'\b[A-Z][A-Za-z]{1,}\.[ \u00a0][가-힣]')
+    _body_plain_for_qp1 = re.sub(r'<[^>]+>', ' ', body)
+    if (title and _PLACEHOLDER_APP.search(title)) or _PLACEHOLDER_APP.search(_body_plain_for_qp1):
+        issues.append(
+            '- 제목 또는 본문에 "Word. 한국어" 형태의 앱명 패턴이 있다 (예: "Blank. 정답이..."). '
+            '실제 앱명이라면 "영단어 앱 Blank"처럼 설명과 함께 표기해라. '
+            '아직 결정되지 않은 앱명이라면 지금 구체적인 이름으로 교체해라.'
+        )
+
     if title and len(title) > 38:
         issues.append(
             f'- "{title}" → 제목이 {len(title)}자로 너무 길다. '

@@ -127,7 +127,35 @@ def check_safety(article: dict, safety_cfg: dict) -> tuple[bool, str]:
     if quality_score < min_score:
         return True, f'품질 점수 {quality_score}점 (자동 발행 최소: {min_score}점)'
 
+    # 제목 클릭 유발 패턴 검사 (조회수 1만+ 블로그 분석 기준, 한국어 제목만 적용)
+    title = article.get('title', '')
+    _has_korean = bool(re.search(r'[가-힣]', title))
+    if title and _has_korean and not _title_has_click_pattern(title):
+        return True, f'제목 클릭 유발 패턴 없음: "{title}" — 손실 프레임·숫자·역발상·질문·방법·행동→결과 중 하나 필요'
+
+    # QP1: 플레이스홀더 앱명 감지 — 'Word. 한국어' 패턴 (defense-in-depth)
+    _PLACEHOLDER_APP = re.compile(r'\b[A-Z][A-Za-z]{1,}\.[ \u00a0][가-힣]')
+    _body_plain = re.sub(r'<[^>]+>', ' ', body)
+    if (title and _PLACEHOLDER_APP.search(title)) or _PLACEHOLDER_APP.search(_body_plain):
+        return True, f'앱명 플레이스홀더 패턴 감지 ("Word. 한국어" 형태) — 실제 앱명으로 교체 필요'
+
     return False, ''
+
+
+def _title_has_click_pattern(title: str) -> bool:
+    """조회수 1만+ 블로그 분석 기반 제목 클릭 유발 패턴 검사."""
+    _LOSS_FRAME = re.compile(r'(안 하면|모르면|못하면|안 받으면|하지 않으면|낮아진다|손해)')
+    _NUMBER_TITLE = re.compile(r'[0-9]+\s*(가지|개|초|원|배|번|단계|분|주|달|년|위|명|억|만원)')
+    _REVERSE_TITLE = re.compile(r'(하지 마세요|신청하지 마|사지 마세요|따라 하지)')
+    _QUESTION_TITLE = re.compile(r'[?？]|왜\s|어떻게\s|얼마나\s')
+    _HOW_TO_TITLE = re.compile(r'(방법|하는 법|가이드|전략|비결|공식|원리|이유)')
+    _ACTION_RESULT = re.compile(
+        r'[가-힣]{2,}면.{0,20}(된다|줄어든다|달라진다|빨라진다|쉬워진다|낸다|바뀐다|오른다|내린다|낮아진다)'
+    )
+    return any(p.search(title) for p in [
+        _LOSS_FRAME, _NUMBER_TITLE, _REVERSE_TITLE,
+        _QUESTION_TITLE, _HOW_TO_TITLE, _ACTION_RESULT,
+    ])
 
 
 def replace_raw_terms(text: str) -> str:
@@ -199,11 +227,16 @@ _META_PLACEHOLDERS = (
 
 
 def _extract_meta_from_body(body: str, title: str = '') -> str:
-    """본문 첫 <p> 태그에서 META 설명을 추출 (플레이스홀더 폴백용)"""
-    plain = re.sub(r'<[^>]+>', '', body or '').strip()
-    first_sentence = re.split(r'(?<=[.!?다])\s', plain)[0][:160].strip()
-    if len(first_sentence) >= 20:
-        return first_sentence
+    """본문 첫 <p> 태그 내용에서 META 설명을 추출 (플레이스홀더 폴백용).
+    H2 텍스트가 포함되지 않도록 <p> 태그 내용만 사용한다.
+    """
+    # 첫 번째 <p> 태그 내용만 추출 (H2 텍스트 혼입 방지)
+    p_match = re.search(r'<p[^>]*>(.*?)</p>', body or '', flags=re.IGNORECASE | re.DOTALL)
+    if p_match:
+        plain = re.sub(r'<[^>]+>', '', p_match.group(1)).strip()
+        first_sentence = re.split(r'(?<=[.!?다])\s', plain)[0][:160].strip()
+        if len(first_sentence) >= 20:
+            return first_sentence
     return title[:160] if title else ''
 
 
@@ -726,6 +759,19 @@ def approve_pending(filepath: str) -> bool:
         article = sanitize_article_for_publish(load_pending_review_file(filepath))
         article.pop('pending_reason', None)
         article.pop('created_at', None)
+
+        # QP1: 플레이스홀더 앱명 감지 경고 (차단은 아님 — 수동 승인이므로 운영자 판단 우선)
+        _PLACEHOLDER_APP = re.compile(r'\b[A-Z][A-Za-z]{1,}\.[ \u00a0][가-힣]')
+        _title = article.get('title', '')
+        _body_plain = re.sub(r'<[^>]+>', ' ', article.get('body', ''))
+        if _PLACEHOLDER_APP.search(_title) or _PLACEHOLDER_APP.search(_body_plain):
+            logger.warning(f"[QP1] 앱명 플레이스홀더 패턴 감지 — 발행 전 수정 권장: {_title}")
+            send_telegram(
+                f"⚠️ <b>[QP1 경고] 앱명 플레이스홀더 패턴</b>\n\n"
+                f"📌 {_title}\n"
+                f'"Word. 한국어" 패턴이 제목 또는 본문에 있습니다. '
+                f'실제 앱명으로 교체 후 재발행을 권장합니다.'
+            )
 
         # 안전장치 우회하여 강제 발행
         body_html, toc_html = markdown_to_html(article.get('body', ''))
