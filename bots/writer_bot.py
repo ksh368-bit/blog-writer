@@ -996,7 +996,7 @@ def _heuristic_review(body: str, require_relatable: bool = True) -> tuple[bool, 
 
         capitalized_terms = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?', sentence)
         unique_caps = {term.strip() for term in capitalized_terms}
-        if len(unique_caps) >= 3:
+        if len(unique_caps) >= 4:  # 3→4: 기술 글(AI, MCP, Node.js 등) 오탐 방지
             issues.append(f'- "{sentence}" → 고유명사나 서비스 이름을 한 문장에 너무 많이 몰아 넣었다.')
 
         if '예를 들어' in sentence:

@@ -128,9 +128,11 @@ def check_safety(article: dict, safety_cfg: dict) -> tuple[bool, str]:
         return True, f'품질 점수 {quality_score}점 (자동 발행 최소: {min_score}점)'
 
     # 제목 클릭 유발 패턴 검사 (조회수 1만+ 블로그 분석 기준, 한국어 제목만 적용)
+    # normalize_title_text 잘림으로 패턴이 소실됐을 때를 대비해 원본 제목도 함께 체크
     title = article.get('title', '')
+    _original_title = article.get('_original_title', title)
     _has_korean = bool(re.search(r'[가-힣]', title))
-    if title and _has_korean and not _title_has_click_pattern(title):
+    if title and _has_korean and not (_title_has_click_pattern(title) or _title_has_click_pattern(_original_title)):
         return True, f'제목 클릭 유발 패턴 없음: "{title}" — 손실 프레임·숫자·역발상·질문·방법·행동→결과 중 하나 필요'
 
     # QP1: 플레이스홀더 앱명 감지 — 'Word. 한국어' 패턴 (defense-in-depth)
@@ -308,8 +310,12 @@ def sanitize_article_for_publish(article: dict) -> dict:
         sanitized['disclaimer'] = _sanitize_disclaimer(sanitized['disclaimer'])
 
     if isinstance(sanitized.get('title'), str):
+        _pre_normalize_title = sanitized['title']
         sanitized['title'] = normalize_title_text(sanitized['title'])
         sanitized['title'] = _fix_dangling_title(sanitized['title'], sanitized)
+        # 잘린 경우 원본 제목 보존 — check_safety의 클릭 패턴 오탐 방지
+        if sanitized['title'] != _pre_normalize_title:
+            sanitized.setdefault('_original_title', _pre_normalize_title)
     if isinstance(sanitized.get('meta'), str):
         sanitized['meta_description'] = sanitized['meta']
 
@@ -336,9 +342,9 @@ def sanitize_article_for_publish(article: dict) -> dict:
 def is_test_article(article: dict) -> bool:
     if article.get('_test_mode') is True:
         return True
+    # meta는 제외 — "테스트·검증" 같은 설명 문구가 포함될 수 있음
     haystacks = [
         str(article.get('title', '')),
-        str(article.get('meta', '')),
         str(article.get('slug', '')),
     ]
     lowered = ' '.join(haystacks).lower()
@@ -665,7 +671,12 @@ def publish_with_result(article: dict) -> tuple[bool, str]:
     }
     Returns: (발행 성공 여부, 실패/대기 사유)
     """
+    # 원본 제목 보존 — normalize_title_text 잘림으로 클릭 패턴이 소실되는 것 방지
+    _original_title = article.get('title', '')
     article = sanitize_article_for_publish(article)
+    # 잘린 경우 원본 제목을 check_safety 판단용으로 복원
+    if _original_title and article.get('title') != _original_title:
+        article['_original_title'] = _original_title
     logger.info(f"발행 시도: {article.get('title', '')}")
     safety_cfg = load_config('safety_keywords.json')
 

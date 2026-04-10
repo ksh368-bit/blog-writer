@@ -1484,3 +1484,117 @@ class TestApprovePendingQP1Warning:
         calls = [str(c) for c in mock_tg.call_args_list]
         qp1_warning = any('앱명' in c or 'QP1' in c for c in calls)
         assert not qp1_warning, f"QP1 오탐 경고 전송됨: {calls}"
+
+# ──────────────────────────────────────────────────────────────
+# 재발방지: normalize_title_text 잘림 → check_safety 오탐
+# ──────────────────────────────────────────────────────────────
+
+class TestNormalizeTitleTruncationSafety:
+    """normalize_title_text 잘림으로 클릭 패턴이 사라져도 check_safety에서 원본 제목으로 체크해야 함"""
+
+    def _safety_cfg(self):
+        return {
+            'always_manual_review': ['팩트체크'],
+            'crypto_keywords': [], 'criticism_keywords': [],
+            'investment_keywords': [], 'legal_keywords': [],
+            'criticism_phrases': [],
+            'min_sources_required': 0,
+            'min_quality_score_for_auto': 0,
+        }
+
+    def test_sanitized_long_title_with_click_pattern_passes_check_safety(self):
+        """publish_with_result 실제 흐름: sanitize 후 잘린 제목으로 check_safety 호출해도 통과"""
+        from bots.publisher_bot import check_safety, sanitize_article_for_publish
+        article = {
+            'title': 'Spring AI Playground에서 MCP 도구를 테스트하면 검증이 몇 초 안에 된다',
+            'corner': '쉬운세상',
+            'body': '<h2>소개</h2><p>본문입니다.</p>',
+            'sources': [],
+            'quality_score': 100,
+        }
+        # publish_with_result 흐름 재현: sanitize → check_safety
+        sanitized = sanitize_article_for_publish(article)
+        assert len(sanitized['title']) <= 38, f"normalize 안됨: {sanitized['title']}"
+        # 잘린 sanitized article로 check_safety 호출 → 통과해야 함 (RED: 현재 실패)
+        needs_review, reason = check_safety(sanitized, self._safety_cfg())
+        assert needs_review is False or '클릭' not in reason, \
+            f"sanitize 후 잘린 제목이 클릭 패턴 없다고 차단됨: reason={reason}"
+
+    def test_title_with_method_pattern_still_passes(self):
+        """'방법' 포함 제목은 truncation 여부 관계없이 통과"""
+        from bots.publisher_bot import check_safety
+        article = {
+            'title': 'Spring AI Playground로 MCP 도구 검증하는 방법',
+            'corner': '쉬운세상',
+            'body': '<h2>소개</h2><p>본문입니다.</p>',
+            'sources': [],
+            'quality_score': 100,
+        }
+        needs_review, reason = check_safety(article, self._safety_cfg())
+        assert needs_review is False or '클릭' not in reason, \
+            f"'방법' 포함 제목이 차단됨: reason={reason}"
+
+# ──────────────────────────────────────────────────────────────
+# 재발방지: 수치 체크 - 한글 수량 표현 인식
+# ──────────────────────────────────────────────────────────────
+
+class TestNumericExpressionRecognition:
+    """'몇 초', '몇 분' 같은 한글 수량 표현도 수치로 인식해야 함"""
+
+    def _count_numbers(self, body):
+        import re
+        from bots.prompt_layer.writer_review import presentation_review
+        split_sentences = lambda t: re.split(r'(?<=[.!?다])\s', t)
+        article = {
+            'title': '테스트 제목으로 검증하는 방법 3가지',
+            'body': body,
+            'meta': '테스트 메타 설명입니다. 충분히 긴 설명입니다.',
+            'topic': '테스트 주제',
+        }
+        ok, msg = presentation_review(article, raw_term_replacements={}, split_sentences=split_sentences)
+        return '수치가 부족' in msg
+
+    def test_korean_quantity_expression_counts_as_number(self):
+        """'몇 초'가 포함된 본문 → 수치 부족 경고 없음"""
+        body = (
+            '<h2>테스트 섹션 1</h2>'
+            '<p>이 도구를 쓰면 몇 초 안에 결과가 나온다. 속도가 빠른 이유는 캐싱 때문이다.</p>'
+            '<p>이전 방식은 몇 분이 걸렸다. 새 방식은 훨씬 빠르다.</p>'
+            '<ul><li>항목 1</li><li>항목 2</li></ul>'
+            '<h2>섹션 2</h2>'
+            '<p>여러 단락으로 구성된 본문 내용이다. 최소 길이를 충족하기 위해 긴 설명을 추가한다.</p>'
+            '<p>두 번째 단락이다. 구체적인 내용을 담고 있다. 독자가 이해하기 쉽게 작성한다.</p>'
+            '<p>세 번째 단락이다. 추가적인 설명을 제공한다. 전체 글의 논지를 지지한다.</p>'
+            '<p>네 번째 단락이다. 더 많은 내용을 추가한다. 본문 길이를 충족한다.</p>'
+            '<p>다섯 번째 단락이다. 핵심 내용을 다시 강조한다. 독자에게 유익한 정보를 제공한다.</p>'
+            '<h2>결론</h2>'
+            '<p>결론 단락이다. 핵심 내용을 정리하고 독자에게 행동을 촉구한다. 이 글을 읽은 독자는 바로 실천할 수 있다.</p>'
+        )
+        assert not self._count_numbers(body), "'몇 초' + '몇 분' 포함 본문에서 수치 부족 경고"
+
+# ──────────────────────────────────────────────────────────────
+# 재발방지: meta에 "테스트" 포함 시 is_test_article 오탐
+# ──────────────────────────────────────────────────────────────
+
+class TestIsTestArticleMeta:
+    """meta 설명에 '테스트'가 포함돼도 is_test_article이 True 반환하면 안 됨"""
+
+    def test_meta_with_test_word_not_test_article(self):
+        """meta에 '테스트' 포함 → is_test_article=False (실제 글 설명에 빈번)"""
+        from bots.publisher_bot import is_test_article
+        article = {
+            'title': 'Spring AI Playground로 MCP 도구 검증하는 방법',
+            'meta': 'Spring AI Playground는 MCP 도구를 10초 안에 테스트·검증할 수 있는 앱이다.',
+            'slug': 'spring-ai-playground-mcp',
+        }
+        assert not is_test_article(article), "meta의 '테스트' 단어로 오탐"
+
+    def test_title_with_test_marker_is_test(self):
+        """제목에 '테스트' 포함 → is_test_article=True (의도된 동작)"""
+        from bots.publisher_bot import is_test_article
+        article = {
+            'title': '테스트 글입니다',
+            'meta': '일반 설명입니다.',
+            'slug': 'test-article',
+        }
+        assert is_test_article(article), "제목 테스트 마커 감지 안됨"

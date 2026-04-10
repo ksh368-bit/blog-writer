@@ -416,3 +416,30 @@ class TestShortSentenceFeedbackMessage:
         """밀도/짧다 표현은 여전히 포함돼야 한다."""
         msg = self._rule_check('그럼 풀이가 쉽다.')
         assert '짧' in msg or '밀도' in msg, f"밀도 언급 없음: {msg}"
+
+
+# ──────────────────────────────────────────────────────────────
+# 재발방지: 기술 고유명사 과밀 경고 임계값
+# ──────────────────────────────────────────────────────────────
+
+class TestProperNounDensityThreshold:
+    """기술 글에서 3개 고유명사 포함 문장도 허용 (임계값 4 이상)"""
+
+    def _heuristic(self, sentence):
+        from bots.writer_bot import _heuristic_review
+        # _heuristic_review는 단락 전체에 대해 동작 — 단일 문장을 <p>로 감쌈
+        body = f'<p>{sentence}</p>'
+        ok, msg = _heuristic_review(body, require_relatable=False)
+        return [l for l in msg.split('\n') if '고유명사' in l and '몰아' in l]
+
+    def test_three_tech_terms_no_warning(self):
+        """Claude Code, Cursor, AI 3개 포함 — 기술 글에선 정상 (임계값 4)"""
+        sentence = 'Claude Code나 Cursor 같은 AI 에디터의 덕분에 코드 작성 속도는 빨라졌다.'
+        noun_issues = self._heuristic(sentence)
+        assert not noun_issues, f"3개 기술 고유명사 오탐: {noun_issues}"
+
+    def test_four_proper_nouns_still_warned(self):
+        """4개 이상 고유명사 → 경고 유지"""
+        sentence = 'Claude Code와 Cursor와 ChatGPT와 Gemini를 동시에 열어서 비교했다.'
+        noun_issues = self._heuristic(sentence)
+        assert noun_issues, f"4개 고유명사 경고 없음"
