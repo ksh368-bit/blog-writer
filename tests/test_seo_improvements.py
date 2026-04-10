@@ -240,6 +240,22 @@ class TestTitleSEOReview:
         length_issues = [l for l in msg.split('\n') if '제목' in l and '길다' in l]
         assert not length_issues, f"38자 제목인데 길이 경고 발생: {msg}"
 
+    def test_qt1_feedback_includes_topic_context(self):
+        """QT1 실패 피드백에 글감 컨텍스트가 포함되어 LLM이 어떤 키워드로 제목을 고쳐야 할지 알 수 있어야 한다."""
+        article = self._good_article(
+            title='Blank. 정답이 자꾸 같다면',
+            topic="Show GN: 'Blank.' 업데이트 - Gemma 4 전환, 중복 정답 버그 수정",
+        )
+        ok, msg = self._review(article)
+        qt1_issues = [l for l in msg.split('\n') if '클릭 유발 패턴' in l]
+        assert qt1_issues, f"QT1 경고가 없음: {msg}"
+        issue_line = qt1_issues[0]
+        # 인용된 제목 뒤 조언 부분에 글감 관련 정보('글감:')가 있어야 LLM이 구체적으로 수정 가능
+        advice_part = issue_line.split('→', 1)[-1] if '→' in issue_line else issue_line
+        assert '글감' in advice_part, (
+            f"QT1 피드백 조언 부분에 '글감' 컨텍스트 없음: {advice_part!r}"
+        )
+
 
 # ──────────────────────────────────────────────────────────────
 # P2: 내부 링크 자동 삽입 (linker_bot)

@@ -276,10 +276,12 @@ def presentation_review(
         if not any(p.search(title) for p in [
             _LOSS_FRAME, _NUMBER_TITLE, _REVERSE_TITLE, _QUESTION_TITLE, _HOW_TO_TITLE, _ACTION_RESULT
         ]):
+            _topic_snippet = (article.get('topic', '') or '')[:40]
             issues.append(
                 f'- "{title}" → 제목에 클릭 유발 패턴 없음. '
                 '①손실 프레임("이거 안 하면 손해"), ②숫자("5가지","3초"), '
-                '③역발상("하지 마세요"), ④질문("왜~?"), ⑤방법("하는 법") 중 하나 포함 필수.'
+                '③역발상("하지 마세요"), ④질문("왜~?"), ⑤방법("이유·해결법") 중 하나 필수. '
+                f'현재 글감: "{_topic_snippet}..." — 이 글감의 핵심 수치·문제·변화를 제목에 직접 드러내라.'
             )
 
     # QT2: 제목 내 핵심 키워드 위치 검사 (Google 스니펫 최적화)
