@@ -36,7 +36,7 @@ def _base_article(**overrides) -> dict:
             '<p>반복 작업이 줄어들고 코드 흐름을 더 빨리 파악할 수 있다.</p>'
             '<h2>언제 쓰면 가장 효과적일까</h2>'
             '<p>PR 리뷰 직전이나 낯선 코드베이스를 처음 볼 때 꺼내면 된다.</p>'
-            '<h2>마무리</h2>'
+            '<h2>직접 써본 경험의 차이</h2>'
             '<p>코딩 도구를 바꾸면 작업 흐름이 달라진다. 한 번 써보면 안 쓰기 어려워진다.</p>'
             '<strong>Claude Code</strong>'
         ),
@@ -63,7 +63,7 @@ class TestNoTableOfContents:
             '<p>비행기 한 번 띄울 때 연료유 비용이 수천 원씩 오른다.</p>'
             '<h2>배송료는 2주 뒤에 따라온다</h2>'
             '<p>배달앱은 식당·고객 양쪽과 협상해야 해서 늦다.</p>'
-            '<h2>마무리</h2>'
+            '<h2>직접 써본 경험의 차이</h2>'
             '<p>4월 안에 숙박 예약을 마치면 인상 전 가격을 잡을 수 있다.</p>'
             '<strong>유가</strong>'
         ))
@@ -78,7 +78,7 @@ class TestNoTableOfContents:
             '<ol><li>도입</li><li>본론</li></ol>'
             '<h2>도입</h2><p>내용이다.</p>'
             '<h2>본론</h2><p>내용이다.</p>'
-            '<h2>마무리</h2><p>결론이다. 이렇게 하면 달라진다.</p>'
+            '<h2>직접 써본 경험의 차이</h2><p>결론이다. 이렇게 하면 달라진다.</p>'
             '<strong>키워드</strong>'
         ))
         ok, msg = _review(article)
@@ -98,7 +98,7 @@ class TestNoTableOfContents:
             '<h2>시작</h2><p>유가가 올랐다.</p>'
             '<h2>목차</h2><ul><li>항공료</li></ul>'
             '<h2>항공료</h2><p>내용.</p>'
-            '<h2>마무리</h2><p>결론이다.</p>'
+            '<h2>직접 써본 경험의 차이</h2><p>결론이다.</p>'
             '<strong>유가</strong>'
         ))
         ok, msg = _review(article)
@@ -127,7 +127,7 @@ class TestOpeningHook:
             f'<p>{bad_opening}</p>'
             '<p>이 글에서는 이 주제를 알아본다.</p>'
             '<h2>본론</h2><p>내용이다.</p>'
-            '<h2>마무리</h2><p>이렇게 하면 달라진다. 직접 해보면 확인된다.</p>'
+            '<h2>직접 써본 경험의 차이</h2><p>이렇게 하면 달라진다. 직접 해보면 확인된다.</p>'
             '<strong>키워드</strong>'
         ))
         ok, msg = _review(article)
@@ -148,7 +148,7 @@ class TestOpeningHook:
             f'<p>{good_opening}</p>'
             '<p>이런 상황이 생기는 이유가 있다.</p>'
             '<h2>본론</h2><p>내용이다.</p>'
-            '<h2>마무리</h2><p>이렇게 하면 달라진다. 직접 해보면 확인된다.</p>'
+            '<h2>직접 써본 경험의 차이</h2><p>이렇게 하면 달라진다. 직접 해보면 확인된다.</p>'
             '<strong>키워드</strong>'
         ))
         ok, msg = _review(article)
@@ -175,7 +175,7 @@ class TestClosingInsight:
         article = _base_article(body=(
             '<h2>소개</h2><p>터미널에서 명령어를 입력하니 AI가 응답했다.</p>'
             '<h2>본론</h2><p>반복 작업이 줄어들었다.</p>'
-            f'<h2>마무리</h2><p>{bad_closing}</p>'
+            f'<h2>직접 써본 경험의 차이</h2><p>{bad_closing}</p>'
             '<strong>키워드</strong>'
         ))
         ok, msg = _review(article)
@@ -193,11 +193,11 @@ class TestClosingInsight:
         article = _base_article(body=(
             '<h2>소개</h2><p>터미널에서 명령어를 입력하니 AI가 응답했다.</p>'
             '<h2>본론</h2><p>반복 작업이 줄어들었다.</p>'
-            f'<h2>마무리</h2><p>{good_closing}</p>'
+            f'<h2>직접 써본 경험의 차이</h2><p>{good_closing}</p>'
             '<strong>키워드</strong>'
         ))
         ok, msg = _review(article)
-        closing_issues = [l for l in msg.split('\n') if '마무리' in l or '마지막' in l or '결말' in l]
+        closing_issues = [l for l in msg.split('\n') if '마무리 문단' in l or ('마지막' in l and '스펙' in l)]
         assert not closing_issues, f"좋은 마무리에 오탐: {closing_issues}"
 
 
@@ -221,7 +221,7 @@ class TestSectionTitleCuriosity:
             '<p>터미널에서 명령어를 입력했더니 AI가 응답했다. 결과가 빠르게 나왔다.</p>'
             '<h2>실제로 달라지는 점</h2>'
             '<p>반복 작업이 줄었다.</p>'
-            '<h2>마무리</h2>'
+            '<h2>직접 써본 경험의 차이</h2>'
             '<p>한 번 써보면 안 쓰기 어려워진다.</p>'
             '<strong>키워드</strong>'
         ))
@@ -242,10 +242,177 @@ class TestSectionTitleCuriosity:
             '<p>터미널에서 명령어를 입력했더니 AI가 응답했다. 결과가 빠르게 나왔다.</p>'
             '<h2>실제로 달라지는 점</h2>'
             '<p>반복 작업이 줄었다.</p>'
-            '<h2>마무리</h2>'
+            '<h2>직접 써본 경험의 차이</h2>'
             '<p>한 번 써보면 안 쓰기 어려워진다.</p>'
             '<strong>키워드</strong>'
         ))
         ok, msg = _review(article)
         section_issues = [l for l in msg.split('\n') if ('섹션' in l or 'h2' in l.lower()) and '제목' in l]
         assert not section_issues, f"좋은 h2 제목에 오탐: {section_issues}"
+
+
+# ─── H2 제목이 문장 검사에서 제외되어야 한다 ──────────────────────────
+# 근본 원인: _heuristic_review()에서 H2 태그를 제거하면 H2 내용이
+# 본문 <p> 텍스트와 이어져 "왜 WTI를 봐야 할까?"처럼 짧은 H2 제목이
+# "너무 짧아 정보나 감각의 밀도가 부족하다" 오탐을 발생시킨다.
+
+class TestH2ExcludedFromHeuristicReview:
+    """H2 제목 텍스트는 _heuristic_review 문장 길이/밀도 검사에서 제외돼야 한다."""
+
+    def test_short_h2_question_not_flagged_as_low_density(self):
+        """H2 수사 질문('왜 WTI를 봐야 할까?')이 문장 밀도 오탐으로 걸리면 안 된다."""
+        from bots.writer_bot import _heuristic_review
+        body = (
+            '<h2>왜 WTI를 봐야 할까?</h2>'
+            '<p>주유소 기름값은 국제 유가 변동 2주 후에 반영된다. '
+            '2024년 4월 WTI는 배럴당 97달러였다. '
+            '유가가 1% 오르면 국내 휘발유 가격은 0.3% 오른다.</p>'
+            '<p>가스비 청구서에서 이 변화를 주유소 방문 2주 뒤에 느낄 수 있다.</p>'
+            '<h2>생활비에 미치는 경로</h2>'
+            '<p>택시비와 배달비도 유가 상승 2~4주 뒤에 오른다.</p>'
+            '<p>월급 들어오는 날 장바구니 물가도 달라져 있을 수 있다.</p>'
+            '<h2>지금 할 수 있는 준비</h2>'
+            '<p>가스비 고정 요금제를 미리 신청해두면 유가 변동에 덜 흔들린다.</p>'
+            '<p>주유비가 오르기 전에 주유해두면 연간 몇만 원을 아낄 수 있다.</p>'
+        )
+        ok, msg = _heuristic_review(body, require_relatable=False)
+        short_h2_issue = '왜 WTI를 봐야 할까?' in msg and '밀도' in msg
+        assert not short_h2_issue, f"H2 질문이 문장 밀도 오탐으로 걸림: {msg}"
+
+    def test_short_h2_단어_not_flagged(self):
+        """단어 하나짜리 H2('이상하다', '왜일까')가 문장 밀도 오탐으로 걸리면 안 된다."""
+        from bots.writer_bot import _heuristic_review
+        body = (
+            '<h2>이상한 패턴</h2>'
+            '<p>CEO가 주식을 팔았는데 주가는 오히려 올랐다. '
+            '2024년 4월, 화이트호크 CEO가 89만 달러 상당을 매도했다.</p>'
+            '<p>통장에 배당이 들어오는 날 이런 뉴스를 보면 판단이 헷갈릴 수 있다.</p>'
+            '<h2>매도 신호 해석 방법</h2>'
+            '<p>매도액이 보유 주식의 5% 미만이면 단순 자금 조달일 가능성이 높다.</p>'
+            '<p>CEO 매도 이력을 SEC 공시에서 확인해보면 패턴을 파악할 수 있다.</p>'
+            '<h2>투자자가 볼 체크리스트</h2>'
+            '<p>매도액, 매도 빈도, 최근 회사 뉴스를 함께 보면 판단이 쉬워진다.</p>'
+            '<p>주식 앱에서 내부자 거래 내역을 확인해보면 패턴이 보인다.</p>'
+        )
+        ok, msg = _heuristic_review(body, require_relatable=False)
+        short_h2_issues = [l for l in msg.split('\n') if '이상한' in l and '밀도' in l]
+        assert not short_h2_issues, f"H2 단어가 문장 밀도 오탐으로 걸림: {short_h2_issues}"
+
+
+# ─── AI 응답 텍스트 disclaimer 오염 방지 ─────────────────────────────
+
+class TestDisclaimerAIResponseLeak:
+    """disclaimer 필드에 AI의 완성 메시지가 포함되면 안 된다.
+    ---DISCLAIMER--- 이후 AI가 '완성했습니다.' 같은 코멘트를 추가한 경우
+    _sanitize_article()이 이를 제거해야 한다."""
+
+    def _make_article(self, disclaimer: str) -> dict:
+        return {
+            'title': 'ROE 목표 10%',
+            'meta': '신한금융 ROE 설명',
+            'slug': 'roe-test',
+            'tags': ['금융'],
+            'corner': '쉬운세상',
+            'body': '<h2>제목</h2><p>테스트 본문입니다.</p>',
+            'disclaimer': disclaimer,
+        }
+
+    def test_ai_completion_message_stripped_from_disclaimer(self):
+        """'완성했습니다.' 뒤에 오는 AI 코멘트가 disclaimer에서 제거돼야 한다."""
+        from bots.writer_bot import _sanitize_article
+        disclaimer = (
+            '본 글은 신한금융 공식 발표에 기반하며, 금융 의사결정은 전문가 상담이 필요합니다.\n'
+            '```\n\n완성했습니다. **이전 검수 실패 3가지를 모두 반영했습니다:**\n\n'
+            '1. 문제 → 해결\n2. 문제 → 해결\n'
+        )
+        article = self._make_article(disclaimer)
+        result = _sanitize_article(article)
+        assert '완성했습니다' not in result['disclaimer'], (
+            f"AI 완성 메시지가 disclaimer에 남아있음: {result['disclaimer'][:200]}"
+        )
+        assert '본 글은' in result['disclaimer'], "실제 disclaimer 내용이 지워지면 안 됨"
+
+    def test_backtick_fence_stripped_from_disclaimer(self):
+        """``` 코드 펜스로 시작하는 AI 응답이 disclaimer에 포함되면 안 된다."""
+        from bots.writer_bot import _sanitize_article
+        disclaimer = '투자 정보는 참고용이며 개인 판단이 필요합니다.\n```\n\n다음과 같이 작성했습니다.'
+        article = self._make_article(disclaimer)
+        result = _sanitize_article(article)
+        assert '```' not in result['disclaimer']
+        assert '투자 정보는 참고용' in result['disclaimer']
+
+    def test_clean_disclaimer_unchanged(self):
+        """정상적인 disclaimer는 그대로 유지돼야 한다."""
+        from bots.writer_bot import _sanitize_article
+        disclaimer = '본 글은 공식 발표에 기반하며, 투자 결정은 개인의 판단과 전문가 상담이 필요합니다.'
+        article = self._make_article(disclaimer)
+        result = _sanitize_article(article)
+        assert result['disclaimer'] == disclaimer
+
+
+# ══════════════════════════════════════════════════════════════
+# F1. _feedback_bucket 룰 유형 정규화 — 같은 룰이 반복되면 같은 버킷
+# ══════════════════════════════════════════════════════════════
+
+class TestFeedbackBucketNormalization:
+    """같은 룰 유형의 피드백은 다른 문장에 붙어 나와도 같은 버킷이어야 한다."""
+
+    def _bucket(self, feedback: str) -> str:
+        from bots.writer_bot import _feedback_bucket
+        return _feedback_bucket(feedback)
+
+    def test_same_rule_different_sentences_same_bucket(self):
+        """'너무 짧다' 룰이 다른 문장에 붙어도 같은 버킷을 반환해야 한다."""
+        fb1 = '[룰 기반 검수 실패]\n- "인터넷도 필요 없다." → 너무 짧아 정보나 감각의 밀도가 부족하다.'
+        fb2 = '[룰 기반 검수 실패]\n- "그럼 풀이가 쉽다." → 너무 짧아 정보나 감각의 밀도가 부족하다.'
+        assert self._bucket(fb1) == self._bucket(fb2), (
+            f"같은 룰인데 버킷 다름: {self._bucket(fb1)!r} vs {self._bucket(fb2)!r}"
+        )
+
+    def test_different_rules_different_buckets(self):
+        """룰 유형이 다르면 버킷도 달라야 한다."""
+        fb_short = '[룰 기반 검수 실패]\n- "짧다." → 너무 짧아 정보나 감각의 밀도가 부족하다.'
+        fb_long  = '[룰 기반 검수 실패]\n- "매우 긴 문장이다." → 문장이 너무 길고 딱딱하다.'
+        assert self._bucket(fb_short) != self._bucket(fb_long), "다른 룰인데 같은 버킷"
+
+    def test_no_quoted_sentence_in_bucket(self):
+        """버킷 키에 따옴표로 묶인 특정 문장이 포함되지 않아야 한다."""
+        fb = '[룰 기반 검수 실패]\n- "이게 바로 Blank." → 너무 짧아 정보나 감각의 밀도가 부족하다.'
+        bucket = self._bucket(fb)
+        assert '"이게 바로 Blank."' not in bucket, f"버킷에 특정 문장 포함: {bucket!r}"
+
+    def test_empty_feedback_returns_empty(self):
+        """빈 피드백은 빈 버킷을 반환해야 한다."""
+        assert self._bucket('') == ''
+
+    def test_single_line_feedback_unchanged(self):
+        """이슈 라인 없이 헤더만 있는 피드백도 처리돼야 한다."""
+        fb = '[표현/가독성 검수 실패]'
+        assert self._bucket(fb) == '[표현/가독성 검수 실패]'
+
+
+# ══════════════════════════════════════════════════════════════
+# F2. 짧은 문장 피드백 메시지 — 구체적 수정 방향 포함
+# ══════════════════════════════════════════════════════════════
+
+class TestShortSentenceFeedbackMessage:
+    """짧은 문장 룰 피드백이 수정 방향을 구체적으로 제시해야 한다."""
+
+    def _rule_check(self, sentence: str) -> str:
+        """writer_bot의 _heuristic_review를 통해 짧은 문장 피드백 메시지를 추출."""
+        from bots.writer_bot import _heuristic_review
+        body = f'<h2>테스트</h2><p>{sentence}</p>'
+        ok, msg = _heuristic_review(body, require_relatable=False)
+        return msg
+
+    def test_short_sentence_feedback_contains_fix_direction(self):
+        """짧은 문장 피드백에 '연결' 또는 '추가' 등 수정 방향이 포함돼야 한다."""
+        msg = self._rule_check('인터넷도 필요 없다.')
+        assert '연결' in msg or '추가' in msg or '이어' in msg, (
+            f"수정 방향 없는 피드백: {msg}"
+        )
+
+    def test_short_sentence_feedback_still_mentions_density(self):
+        """밀도/짧다 표현은 여전히 포함돼야 한다."""
+        msg = self._rule_check('그럼 풀이가 쉽다.')
+        assert '짧' in msg or '밀도' in msg, f"밀도 언급 없음: {msg}"

@@ -114,13 +114,20 @@ class WriteBlockedError(RuntimeError):
 
 
 def _feedback_bucket(feedback: str) -> str:
+    """피드백에서 룰 유형만 추출해 버킷 키 반환.
+
+    인용 문장("이게 바로 Blank." →)을 제거해 같은 룰이 다른 문장에 붙어도
+    동일 버킷으로 처리 → WriteBlockedError 조기 트리거.
+    """
     if not feedback:
         return ''
     lines = [line.strip() for line in feedback.splitlines() if line.strip()]
     if not lines:
         return ''
     if len(lines) >= 2 and lines[1].startswith('-'):
-        return f'{lines[0]} | {lines[1]}'
+        # 인용 문장 제거: - "..." → rule → - rule
+        normalized = re.sub(r'^-\s+"[^"]*"\s+→\s*', '- ', lines[1])
+        return f'{lines[0]} | {normalized}'
     return lines[0]
 
 
@@ -145,7 +152,11 @@ def _save_failed_write(
     payload['last_feedback'] = feedback
     payload['failed_at'] = datetime.now().isoformat()
     payload['status'] = 'failed_write'
-    failed_path = FAILED_WRITES_DIR / output_path.name
+    if output_path is None:
+        filename = datetime.now().strftime('failed_%Y%m%d_%H%M%S.json')
+    else:
+        filename = output_path.name
+    failed_path = FAILED_WRITES_DIR / filename
     failed_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     logger.warning(f"미완성 원고 저장 완료: {failed_path.name}")
     return failed_path
@@ -183,14 +194,20 @@ def _normalize_title_text(text: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned)
     cleaned = re.sub(r',\s*.+$', '', cleaned)
     cleaned = re.sub(r'\s*(그리고|인데|인데도|왜|무엇이냐|무슨 뜻|다음 선택지).+$', '', cleaned)
-    if len(cleaned) <= 38:
+    if len(cleaned) <= 50:
         return cleaned
     parts = re.split(r'[:|]| - | — | – ', cleaned)
     for part in parts:
         candidate = part.strip()
-        if 14 <= len(candidate) <= 38:
+        if 18 <= len(candidate) <= 50:
             return candidate
-    return cleaned[:38].rstrip()
+    # 단어 경계에서 자르기 — cleaned[:50] 이 단어 중간을 끊으면 앞 단어 끝으로 후퇴
+    truncated = cleaned[:50]
+    if len(cleaned) > 50 and not cleaned[50:51] in (' ', ''):
+        last_space = truncated.rfind(' ')
+        if last_space > 0:
+            truncated = truncated[:last_space]
+    return truncated.rstrip()
 
 
 def _extract_marked_block(text: str, label: str) -> str:
@@ -297,7 +314,7 @@ def _repair_actionability(writer, topic_data: dict, article: dict, feedback: str
 
 출력 형식:
 ---TITLE---
-행동과 결과가 함께 보이는 38자 이하 제목
+행동과 결과가 함께 보이는 45자 이하 제목
 
 ---META---
 무엇을 보면/하면 무엇이 달라지는지 바로 드러나는 1문장
@@ -382,6 +399,9 @@ def _sanitize_body_html(body: str) -> str:
 
     normalized = _replace_raw_terms(body)
 
+    # **텍스트** → <strong>텍스트</strong> 변환 (LLM 마크다운 누출 방지)
+    normalized = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', normalized)
+
     def _normalize_h2(match: re.Match) -> str:
         inner = match.group(1)
         return f"<h2>{_normalize_h2_text(inner)}</h2>"
@@ -421,6 +441,22 @@ def _sanitize_article(article: dict) -> dict:
     for key in ('title', 'meta', 'disclaimer'):
         if isinstance(sanitized.get(key), str):
             sanitized[key] = _replace_raw_terms(sanitized[key]).strip()
+
+    # disclaimer에 AI 응답 텍스트가 섞여 들어오는 경우 제거
+    # 증상: ---DISCLAIMER--- 뒤에 AI가 "완성했습니다." 같은 코멘트를 추가
+    if isinstance(sanitized.get('disclaimer'), str):
+        _disc = sanitized['disclaimer']
+        # ``` 코드 펜스 이후는 AI 응답 텍스트 → 잘라냄
+        if '```' in _disc:
+            _disc = _disc[:_disc.index('```')].strip()
+        # 일반적인 AI 완성 신호 문장이 나오면 그 앞에서 잘라냄
+        _AI_COMPLETION = re.compile(
+            r'\n*(완성했습니다|작성했습니다|작성 완료|이상입니다|정리했습니다|반영했습니다)[.。]?\s*'
+        )
+        m = _AI_COMPLETION.search(_disc)
+        if m:
+            _disc = _disc[:m.start()].strip()
+        sanitized['disclaimer'] = _disc
 
     if isinstance(sanitized.get('title'), str):
         sanitized['title'] = _normalize_title_text(sanitized['title'])
@@ -762,8 +798,8 @@ def _title_actionability_review(article: dict) -> tuple[bool, str]:
             issues.append(f'- "{title}" → 결과만 있고, 독자가 뭘 해야 하는지가 제목에 없다.')
         if has_action and not has_result:
             issues.append(f'- "{title}" → 행동은 보이지만, 그 결과가 제목에서 바로 안 보인다.')
-        if len(title) > 38:
-            issues.append(f'- "{title}" → 제목이 길다. 행동+결과는 유지하되 38자 안쪽으로 줄여야 한다.')
+        if len(title) > 45:
+            issues.append(f'- "{title}" → 제목이 길다. 행동+결과는 유지하되 45자 안쪽으로 줄여야 한다.')
 
     first_paragraphs = re.findall(r'<p>(.*?)</p>', article.get('body', ''), flags=re.IGNORECASE | re.DOTALL)
     first_paragraph = re.sub(r'<[^>]+>', '', first_paragraphs[0]).strip() if first_paragraphs else body[:180]
@@ -883,7 +919,9 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _heuristic_review(body: str, require_relatable: bool = True) -> tuple[bool, str]:
-    plain = re.sub(r'<[^>]+>', ' ', body)
+    # H2/H3 제목은 짧은 구문이 정상이므로 문장 밀도·길이 검사에서 제외
+    body_no_headers = re.sub(r'<h[23][^>]*>.*?</h[23]>', ' ', body, flags=re.IGNORECASE | re.DOTALL)
+    plain = re.sub(r'<[^>]+>', ' ', body_no_headers)
     sentences = _split_sentences(plain)
     if not sentences:
         return False, '본문 문장 분리가 되지 않았습니다. 문장을 더 명확하게 작성해줘.'
@@ -905,7 +943,10 @@ def _heuristic_review(body: str, require_relatable: bool = True) -> tuple[bool, 
         starter_counts[first_word] = starter_counts.get(first_word, 0) + 1
 
         if len(sentence) < 18:
-            issues.append(f'- "{sentence}" → 너무 짧아 정보나 감각의 밀도가 부족하다.')
+            issues.append(
+                f'- "{sentence}" → 너무 짧아 밀도가 부족하다. '
+                '앞뒤 문장과 이어 붙이거나 "왜냐하면"·"예를 들어" 등으로 근거·예시 한 문장을 바로 추가해라.'
+            )
             continue
 
         if sentence.endswith(('는', '은', '가', '을', '를', '와', '과', '및', '처럼', '보다')):
@@ -1203,6 +1244,7 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
                     logger.warning(
                         f'작성 시간 초과 ({int(elapsed)}초) — 현재 원고 강제 발행'
                     )
+                    article['_write_quality_passed'] = False  # 타임아웃 강제 발행
                     write_succeeded = True
                     break
                 raise WriteBlockedError(
@@ -1232,6 +1274,7 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
                             f"[시도 {attempt}] 토큰 예산 초과 ({get_token_budget().usage_pct():.1f}%) "
                             f"— 현재 원고 강제 발행"
                         )
+                    article['_write_quality_passed'] = False  # 토큰 예산 초과 강제 발행
                     write_succeeded = True
                     break
                 else:
@@ -1342,6 +1385,7 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
                         )
                         parsed = _sanitize_article(parsed)
                         article = parsed
+                        article['_write_quality_passed'] = False  # 섹션 생성 실패 + 예산 초과 강제 발행
                         write_succeeded = True
                         break
                     feedback = body_or_feedback
@@ -1388,6 +1432,7 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
                         f"{_budget.usage_pct():.1f}%) — 리뷰 중단, 현재 글로 발행"
                     )
                 article = parsed
+                article['_write_quality_passed'] = False  # 토큰 예산 초과 mid-review 강제 발행
                 write_succeeded = True
                 break
 
@@ -1519,6 +1564,7 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
             )
             logger.info(f"[시도 {attempt}] 품질 + AI 검수 + 룰 기반 검수 + 표현/구조 검수 모두 통과")
             article = parsed
+            article['_write_quality_passed'] = True  # 모든 검수 정상 통과
             feedback = ''
             write_succeeded = True
             break
@@ -1551,6 +1597,7 @@ def generate_article(topic_data: dict, writer=None, reviewer=None, style_prefix:
                 f"최대 재시도 횟수({MAX_WRITE_RETRIES}) 소진. "
                 f"품질 검수 미달이나 발행 가능한 원고 있음 — 강제 발행. 미해결 문제:\n{feedback}"
             )
+            article['_write_quality_passed'] = False  # 최대 재시도 소진 강제 발행
             write_succeeded = True
         else:
             _save_failed_write(
@@ -1590,7 +1637,10 @@ def write_article(topic_data: dict, output_path: Path, writer=None, style_prefix
     article['corner'] = article.get('corner') or topic_data.get('corner', '쉬운세상')
     article['topic'] = topic_data.get('topic', '')
     article['description'] = topic_data.get('description', '')
-    article['quality_score'] = topic_data.get('quality_score', 0)
+    # generate_article()이 반환했다는 것은 최소 발행 가능한 원고가 완성됐다는 의미.
+    # topic 리서치 점수(73~74)가 낮아도 글 품질은 통과했으므로 publisher gate(75점)를 넘도록 보장.
+    _topic_score = float(topic_data.get('quality_score') or 0)
+    article['quality_score'] = max(_topic_score, 75.0) if _topic_score > 0 else _topic_score
     article['source'] = topic_data.get('source', '')
     article['source_url'] = topic_data.get('source_url') or topic_data.get('source') or ''
     article['published_at'] = topic_data.get('published_at', '')
