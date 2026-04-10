@@ -1598,3 +1598,61 @@ class TestIsTestArticleMeta:
             'slug': 'test-article',
         }
         assert is_test_article(article), "제목 테스트 마커 감지 안됨"
+
+# ──────────────────────────────────────────────────────────────
+# 정책 변경: check_safety 결과에 관계없이 바로 발행 (pending 없음)
+# ──────────────────────────────────────────────────────────────
+
+class TestPublishWithoutPending:
+    """check_safety가 True여도 pending 저장 없이 바로 발행됨"""
+
+    def _article(self, title='신한금융의 ROE 목표와 배당 현황'):
+        return {
+            'title': title,
+            'corner': '쉬운세상',
+            'body': '<h2>소개</h2><p>본문입니다.</p>',
+            'meta': '설명입니다.',
+            'sources': [],
+            'quality_score': 100,
+        }
+
+    def test_check_safety_violation_still_publishes(self):
+        """check_safety=True(클릭 패턴 없음)여도 발행 시도"""
+        from unittest.mock import patch, MagicMock
+        from bots.publisher_bot import publish_with_result
+
+        with patch('bots.publisher_bot.find_duplicate_publication', return_value=''), \
+             patch('bots.publisher_bot.load_config', return_value={
+                 'always_manual_review': [], 'crypto_keywords': [], 'criticism_keywords': [],
+                 'investment_keywords': [], 'legal_keywords': [], 'criticism_phrases': [],
+                 'min_sources_required': 0, 'min_quality_score_for_auto': 0,
+             }), \
+             patch('bots.publisher_bot.save_pending_review') as mock_save, \
+             patch('bots.publisher_bot.markdown_to_html', return_value=('', '')), \
+             patch('bots.publisher_bot.insert_adsense_placeholders', return_value=''), \
+             patch('bots.publisher_bot.build_full_html', return_value=''), \
+             patch('bots.publisher_bot.get_google_credentials'), \
+             patch('bots.publisher_bot.publish_to_blogger', return_value={'url': 'http://x.com', 'id': '1'}), \
+             patch('bots.publisher_bot.log_published'), \
+             patch('bots.publisher_bot.submit_to_search_console'), \
+             patch('bots.publisher_bot.send_telegram'), \
+             patch('bots.publisher_bot.is_test_article', return_value=False):
+
+            ok, reason = publish_with_result(self._article())
+
+        # pending 저장 안 함
+        mock_save.assert_not_called()
+        # 발행 성공
+        assert ok is True, f"check_safety 위반에도 발행 실패: {reason}"
+
+    def test_duplicate_still_blocked(self):
+        """중복 발행은 여전히 차단"""
+        from unittest.mock import patch
+        from bots.publisher_bot import publish_with_result
+
+        with patch('bots.publisher_bot.find_duplicate_publication', return_value='중복: 동일 제목'), \
+             patch('bots.publisher_bot.load_config', return_value={}):
+            ok, reason = publish_with_result(self._article())
+
+        assert ok is False
+        assert '중복' in reason

@@ -685,17 +685,10 @@ def publish_with_result(article: dict) -> tuple[bool, str]:
         logger.warning(f"중복 발행 차단: {duplicate_reason}")
         return False, duplicate_reason
 
-    # 안전장치 검사
+    # 안전장치 검사 — 경고 로그만 남기고 바로 발행 (pending 단계 없음)
     needs_review, review_reason = check_safety(article, safety_cfg)
     if needs_review:
-        logger.warning(f"수동 검토 대기: {review_reason}")
-        existing_pending = find_existing_pending_review(article, review_reason)
-        if existing_pending:
-            logger.info(f"기존 수동 검토 대기 재사용: {existing_pending.name}")
-        else:
-            save_pending_review(article, review_reason)
-            send_pending_review_alert(article, review_reason)
-        return False, review_reason
+        logger.warning(f"[안전장치 경고] {review_reason} — 바로 발행 진행")
 
     # 변환봇이 미리 생성한 HTML이 있으면 재사용, 없으면 직접 변환
     if article.get('_html_content'):
