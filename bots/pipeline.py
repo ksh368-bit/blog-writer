@@ -19,6 +19,7 @@ import signal
 import sys
 from datetime import datetime
 from pathlib import Path
+from bots.prompt_layer.writer_review import TITLE_STRONG_PATTERNS, TITLE_WEAK_PATTERNS
 
 BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / 'data'
@@ -260,6 +261,68 @@ def _save_unpublished_originals(articles: list[dict]) -> None:
             logger.info(f"[미발행 원고 보존] {path.name}")
 
 
+def _title_has_click_pattern(title: str) -> bool:
+    """제목에 클릭 유발 패턴이 있는지 검사 (writer_review 공통 상수 사용)."""
+    return any(p.search(title) for p in TITLE_STRONG_PATTERNS + TITLE_WEAK_PATTERNS)
+
+
+def _filter_republishable(
+    articles: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """재발행 대상 원고를 제목 검수로 필터링한다.
+
+    - _write_quality_passed=True  → 검수 완료된 글, 바로 발행 허용
+    - _write_quality_passed=False 또는 플래그 없음 → 제목 클릭 패턴 재검사
+        - 통과 시: 발행 허용
+        - 실패 시: 차단 (pending_review 이동 대상)
+
+    Returns: (publishable, blocked)
+    """
+    publishable = []
+    blocked = []
+
+    for art in articles:
+        quality_passed = art.get('_write_quality_passed')
+
+        if quality_passed is True:
+            # 모든 검수를 정상 통과한 글 — 신뢰하고 바로 발행
+            publishable.append(art)
+            continue
+
+        # force-publish이거나 구버전(플래그 없음) → 제목 클릭 패턴 재검사
+        title = art.get('title', '')
+        if _title_has_click_pattern(title):
+            logger.info(
+                f"[재발행 검수] '{title}' — 제목 패턴 통과, 발행 허용"
+                f" (force_published={quality_passed is False})"
+            )
+            publishable.append(art)
+        else:
+            logger.warning(
+                f"[재발행 차단] '{title}' — 제목에 클릭 유발 패턴 없음. "
+                f"pending_review로 이동 (재작성 필요)"
+            )
+            blocked.append(art)
+
+    return publishable, blocked
+
+
+def _save_blocked_to_pending(blocked: list[dict]) -> None:
+    """재발행 차단된 원고를 pending_review/에 저장."""
+    import json
+    from datetime import datetime
+    pending_dir = DATA_DIR / 'pending_review'
+    pending_dir.mkdir(parents=True, exist_ok=True)
+
+    for art in blocked:
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fname = f"{ts}_pending.json"
+        path = pending_dir / fname
+        payload = {**art, '_blocked_reason': '재발행 제목 검수 실패 — 클릭 유발 패턴 없음'}
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        logger.info(f"[재발행 차단] pending_review 저장: {fname}")
+
+
 def _load_unpublished_originals() -> list[dict]:
     """originals/에 있지만 published/ · pending_review/에 없는 원고를 반환 (발행 재시도 대상)."""
     import json
@@ -400,7 +463,16 @@ def main():
     if not args.skip_publish and not args.topic:
         unpublished = _load_unpublished_originals()
         if unpublished:
-            step_publish(unpublished)
+            # 재발행 경로는 generate_article()을 건너뛰므로 검수를 재실행해서 필터링
+            publishable, blocked = _filter_republishable(unpublished)
+            if blocked:
+                _save_blocked_to_pending(blocked)
+                logger.warning(
+                    f"[재발행] {len(blocked)}편 제목 검수 실패 — pending_review 이동, "
+                    f"{len(publishable)}편만 발행 진행"
+                )
+            if publishable:
+                step_publish(publishable)
 
     # 2단계: 글 작성 / 3단계: 발행
     if args.skip_publish or args.topic:

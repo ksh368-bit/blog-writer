@@ -10,6 +10,24 @@ from pathlib import Path
 
 _HEURISTIC_PATTERNS_PATH = Path(__file__).parent.parent.parent / 'data' / 'heuristic_patterns.json'
 
+# ── 제목 클릭 유발 패턴 (QT1) — publisher_bot.py·pipeline.py와 공유 ──────────
+TITLE_STRONG_PATTERNS = [
+    re.compile(r'(안 하면|모르면|못하면|안 받으면|이거 모르면|하지 않으면|낮아진다|손해)'),
+    re.compile(r'[0-9]+\s*(가지|개|초|원|배|번|단계|분|주|달|년|위|명|억|만원)'),
+    re.compile(r'(하지 마세요|신청하지 마|사지 마세요|쓰지 마세요|따라 하지)'),
+    re.compile(r'[가-힣]{2,}면.{0,20}(된다|줄어든다|달라진다|빨라진다|쉬워진다|낸다|바뀐다|오른다|내린다|늘어난다|낮아진다)'),
+    re.compile(r'[0-9]+\s*(개월|달|주|일|년|시간|분|초)\s*(만에|안에|이면)'),
+]
+# 주의: `%`는 의도적으로 STRONG에서 제외 — "ROE 10% 목표"처럼 설명체 재무 제목이 오탐될 수 있음
+
+TITLE_WEAK_PATTERNS = [
+    re.compile(r'(방법|하는 법|가이드|전략|비결|공식|원리|이유)'),
+    re.compile(r'[?？]|왜\s|어떻게\s|얼마나\s'),
+    re.compile(r'(아무도\s*말해주지\s*않는|몰랐던|숨겨진|진짜\s*이유|실제로는)'),
+    re.compile(r'(vs\.?|VS\.?|비교|차이|어떻게\s*다를까)'),
+    re.compile(r'(쓸 수 있다|활용할 수 있다|사용할 수 있다|해결할 수 있다)'),
+]
+
 
 def _load_learned_heuristic_patterns() -> tuple[tuple[str, ...], tuple[str, ...]]:
     """data/heuristic_patterns.json에서 자가학습된 패턴을 로드."""
@@ -273,25 +291,24 @@ def presentation_review(
                 f'"{_CURRENT_YEAR}년 금리 변화 대비법"처럼 현재 연도를 포함하면 Google CTR이 높아진다.'
             )
 
-    # QT1: 제목 클릭 유발 패턴 검사 (조회수 1만+ 분석 기반)
+    # QT1: 제목 클릭 유발 패턴 검사 (강한/약한 분기)
     if title:
-        _LOSS_FRAME     = re.compile(r'(안 하면|모르면|못하면|안 받으면|이거 모르면|하지 않으면)')
-        _NUMBER_TITLE   = re.compile(r'[0-9]+\s*(가지|개|초|원|배|번|단계|분|주|달|년|위|명|억|만원)')
-        _REVERSE_TITLE  = re.compile(r'(하지 마세요|신청하지 마|사지 마세요|쓰지 마세요)')
-        _QUESTION_TITLE = re.compile(r'[?？]|왜\s|어떻게\s|얼마나\s')
-        _HOW_TO_TITLE   = re.compile(r'(방법|하는 법|가이드|전략|비결|공식|원리|이유)')
-        _ACTION_RESULT  = re.compile(
-            r'[가-힣]{2,}면.{0,20}(된다|줄어든다|달라진다|빨라진다|쉬워진다|낸다|바뀐다|오른다|내린다|늘어난다)'
-        )
-        if not any(p.search(title) for p in [
-            _LOSS_FRAME, _NUMBER_TITLE, _REVERSE_TITLE, _QUESTION_TITLE, _HOW_TO_TITLE, _ACTION_RESULT
-        ]):
-            _topic_snippet = (article.get('topic', '') or '')[:40]
+        _has_strong = any(p.search(title) for p in TITLE_STRONG_PATTERNS)
+        _has_weak   = any(p.search(title) for p in TITLE_WEAK_PATTERNS)
+        _topic_snippet = (article.get('topic', '') or '')[:40]
+
+        if not _has_strong and not _has_weak:
             issues.append(
                 f'- "{title}" → 제목에 클릭 유발 패턴 없음. '
                 '①손실 프레임("이거 안 하면 손해"), ②숫자("5가지","3초"), '
                 '③역발상("하지 마세요"), ④질문("왜~?"), ⑤방법("이유·해결법") 중 하나 필수. '
                 f'현재 글감: "{_topic_snippet}..." — 이 글감의 핵심 수치·문제·변화를 제목에 직접 드러내라.'
+            )
+        elif not _has_strong and _has_weak:
+            issues.append(
+                f'[경고] "{title}" → 제목 클릭 패턴이 약하다 ("방법"·"이유" 단독). '
+                '숫자("5가지"), 손실("안 하면 손해"), 구체 결과("달라진다")와 결합하면 CTR이 높아진다. '
+                f'현재 글감: "{_topic_snippet}..." — 핵심 수치나 변화를 제목에 드러내라.'
             )
 
     # QT2: 제목 내 핵심 키워드 위치 검사 (Google 스니펫 최적화)
@@ -594,8 +611,10 @@ def presentation_review(
             )
             break  # 하나만 감지해도 충분
 
+    # [경고] prefix 이슈만 있으면 ok=True (발행 허용, LLM에게 개선 힌트만 제공)
+    hard_issues = [i for i in issues if not i.startswith('[경고]')]
     if issues:
-        return False, '\n'.join(dict.fromkeys(issues))
+        return len(hard_issues) == 0, '\n'.join(dict.fromkeys(issues))
     return True, ''
 
 

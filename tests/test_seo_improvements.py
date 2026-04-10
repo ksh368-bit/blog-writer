@@ -1656,3 +1656,190 @@ class TestPublishWithoutPending:
 
         assert ok is False
         assert '중복' in reason
+
+
+# ──────────────────────────────────────────────────────────────
+# CTR 10%: QT1 강한/약한 패턴 분기 검증
+# ──────────────────────────────────────────────────────────────
+
+class TestTitleCTRStrength:
+    """QT1: 강한 패턴이면 [경고] 없음, 약한 패턴만이면 [경고] 포함"""
+
+    @staticmethod
+    def _review(article):
+        import re as _re
+        from bots.prompt_layer.writer_review import presentation_review
+        split_sentences = lambda t: _re.split(r'(?<=[.!?다])\s+', t)
+        return presentation_review(article, raw_term_replacements={}, split_sentences=split_sentences)
+
+    @staticmethod
+    def _make_article(title, topic='ROE 배당주 투자'):
+        return {
+            'title': title,
+            'topic': topic,
+            'meta': f'{title}.',
+            'corner': '쉬운세상',
+            'body': (
+                '<h2>첫 번째 섹션</h2><p>본문 내용이다.</p><p>두 번째 문단이다.</p>'
+                '<h2>두 번째 섹션</h2><p>세 번째 문단이다.</p><p>네 번째 문단이다.</p>'
+                '<h2>세 번째 섹션</h2><p>다섯 번째 문단이다.</p><p>여섯 번째 문단이다.</p>'
+            ),
+        }
+
+    def test_strong_action_result_passes(self):
+        """손실 프레임('낮아진다') STRONG → [경고] 없음"""
+        article = self._make_article('ROE가 낮으면 내 통장 이자도 낮아진다')
+        _, msg = self._review(article)
+        assert '[경고]' not in msg, f"STRONG 제목에 [경고] 오탐: {msg}"
+
+    def test_strong_loss_passes(self):
+        """손실 프레임('손해') STRONG → [경고] 없음"""
+        article = self._make_article('CEO가 주식 팔 때 따라 팔면 손해')
+        _, msg = self._review(article)
+        assert '[경고]' not in msg, f"STRONG 제목에 [경고] 오탐: {msg}"
+
+    def test_strong_number_time_passes(self):
+        """시간+만에 STRONG → [경고] 없음"""
+        article = self._make_article('3개월 만에 Google 상위 노출 달성하는 법')
+        _, msg = self._review(article)
+        assert '[경고]' not in msg, f"STRONG 시간 패턴에 [경고] 오탐: {msg}"
+
+    def test_weak_how_to_alone_warns(self):
+        """이유 단독 WEAK → [경고] 포함"""
+        article = self._make_article('WTI 오르는 이유')
+        _, msg = self._review(article)
+        assert '[경고]' in msg, f"WEAK 이유 제목에 [경고] 없음: {msg}"
+
+    def test_weak_method_alone_warns(self):
+        """방법 단독 WEAK → [경고] 포함"""
+        article = self._make_article('내부 링크 삽입 방법')
+        _, msg = self._review(article)
+        assert '[경고]' in msg, f"WEAK 방법 제목에 [경고] 없음: {msg}"
+
+    def test_strong_plus_weak_no_warn(self):
+        """숫자(STRONG) + 방법(WEAK) 결합 → [경고] 없음"""
+        article = self._make_article('5가지 방법으로 Google 체류시간이 늘어난다')
+        _, msg = self._review(article)
+        assert '[경고]' not in msg, f"STRONG+WEAK 결합인데 [경고] 오탐: {msg}"
+
+    def test_no_pattern_fails_qt1(self):
+        """패턴 없는 설명체 제목 → ok=False, [경고] 아닌 하드 FAIL"""
+        article = self._make_article('AI의 미래와 인간 사회')
+        ok, msg = self._review(article)
+        assert ok is False, f"패턴 없는 제목이 ok=True: {msg}"
+        assert '클릭 유발 패턴 없음' in msg, f"하드 FAIL 메시지 없음: {msg}"
+
+    def test_ability_pattern_warns(self):
+        """능력형 결말('쓸 수 있다') → [경고] 포함"""
+        article = self._make_article('git 저장소에 프롬프트 모으면 모든 도구에서 쓸 수 있다')
+        _, msg = self._review(article)
+        assert '[경고]' in msg, f"능력형 결말에 [경고] 없음: {msg}"
+
+
+# ──────────────────────────────────────────────────────────────
+# CTR 10%: [경고]만 있으면 ok=True (발행 허용)
+# ──────────────────────────────────────────────────────────────
+
+class TestWeakPatternWarningDoesNotBlock:
+    """[경고] prefix 이슈만 있으면 presentation_review가 ok=True 반환"""
+
+    def _review(self, article):
+        import re as _re
+        from bots.prompt_layer.writer_review import presentation_review
+        split_sentences = lambda t: _re.split(r'(?<=[.!?다])\s+', t)
+        return presentation_review(article, raw_term_replacements={}, split_sentences=split_sentences)
+
+    def _full_article(self, title, topic='배당주 선택 기준'):
+        """Q5·QK1·QT2·강조·약어 등 다른 hard issue 없는 배당주 본문 (900자+ 무공백)."""
+        return {
+            'title': title,
+            'topic': topic,
+            'meta': '배당주를 고르면 매년 배당금 수익이 생기고 주가 상승도 함께 노릴 수 있다.',
+            'corner': '쉬운세상',
+            'body': (
+                '<h2>배당주의 핵심 개념과 특징</h2>'
+                '<p><strong>배당주</strong>는 매년 기업이 이익의 일부를 주주에게 나눠주는 주식이다. '
+                '분기마다 배당금을 받아 월세 수익과 유사한 효과를 낼 수 있다. '
+                '한국 배당주 평균 배당수익률은 약 3.2%이며 우량 배당주는 4.5% 수준이다.</p>'
+                '<p>배당주에 투자하면 주가 상승 수익과 배당 수익 두 가지를 동시에 노릴 수 있다. '
+                '장기 보유할수록 복리 효과로 수익이 불어난다. '
+                '코스피 우량 배당주 상위 10종목 평균 배당성향은 35% 수준이다.</p>'
+                '<p>배당주 투자 시 가장 중요한 지표는 배당수익률과 배당성향이다. '
+                '배당수익률이 높아도 배당성향이 90% 이상이면 지속 가능성이 낮다. '
+                '적정 배당성향은 30~60% 사이가 안정적이다.</p>'
+                '<p>배당 투자는 복리 효과 덕분에 오래 보유할수록 유리하다. '
+                '10년 이상 보유한 배당주 투자자의 평균 수익률은 시장 평균을 웃돌았다. '
+                '배당 재투자 전략을 쓰면 자산이 더 빠르게 불어난다.</p>'
+                '<ul><li>배당수익률: 주가 대비 배당금 비율</li>'
+                '<li>배당성향: 순이익 대비 배당금 비율</li>'
+                '<li>배당 안정성: 최근 5년 배당 지속 여부</li></ul>'
+                '<h2>배당주 선택 기준 비교</h2>'
+                '<p><strong>배당주 선택</strong>의 첫 번째 기준은 자기자본이익률이다. '
+                '자기자본이익률이 10% 이상인 기업을 우량 배당주로 볼 수 있다. '
+                '이 수치가 낮으면 배당금이 줄거나 중단될 위험이 있다.</p>'
+                '<p>두 번째 기준은 부채비율이다. 부채비율이 100% 미만인 기업이 배당 안정성이 높다. '
+                '부채가 많으면 이자 비용이 늘어나 배당 여력이 줄어든다. '
+                '금융주는 부채비율 기준이 다르니 업종별로 비교해야 한다.</p>'
+                '<p>세 번째 기준은 영업이익 성장세다. 최근 3년 영업이익이 꾸준히 오른 기업은 배당 증가 가능성이 높다. '
+                '실적이 정체되면 배당금도 늘지 않는다. 성장 배당주를 골라야 복리 효과가 극대화된다.</p>'
+                '<p>배당 성장 기업을 찾을 때는 최근 5년 배당금 증가 이력을 먼저 확인해야 한다. '
+                '배당금이 매년 5% 이상 오른 기업은 앞으로도 꾸준히 오를 가능성이 높다.</p>'
+                '<h2>배당주 투자 주의사항</h2>'
+                '<p><strong>배당락일</strong>과 세금을 놓치면 손해다. '
+                '배당락일 이후 주가 하락 폭이 배당금보다 크면 전체 수익은 마이너스가 된다. '
+                '배당소득세는 15.4%로 자동 원천징수된다.</p>'
+                '<p>금융소득이 연 2,000만 원을 넘으면 종합소득세 대상이 된다. '
+                '절세 전략을 세우면 실수익이 달라진다. '
+                '개인종합자산관리계좌를 활용하면 절세 혜택을 받을 수 있다.</p>'
+                '<p>분산 투자가 중요하다. 한 종목에 집중하면 기업 실적 악화 시 큰 손실이 난다. '
+                '배당주 포트폴리오는 최소 5종목 이상으로 구성하는 것이 안전하다. '
+                '금융·제조·통신·에너지 등 업종을 다양하게 나눠야 위험이 줄어든다.</p>'
+            ),
+        }
+
+    def test_weak_method_title_ok_is_true(self):
+        """방법 단독 WEAK 제목 → [경고] 포함 + ok=True (발행 허용)"""
+        article = self._full_article('배당주를 고르는 방법과 선택 기준')
+        ok, msg = self._review(article)
+        assert '[경고]' in msg, f"WEAK 제목에 [경고] 없음: {msg}"
+        assert ok is True, f"WEAK 제목이 차단됨 — ok=False: {msg}"
+
+    def test_no_pattern_ok_is_false(self):
+        """패턴 없는 제목 → ok=False"""
+        article = self._full_article('배당주 선택 시 고려할 사항')
+        ok, msg = self._review(article)
+        assert ok is False, f"패턴 없는 제목이 ok=True: {msg}"
+
+
+# ──────────────────────────────────────────────────────────────
+# CTR 10%: publisher_bot + pipeline 패턴 동기화 검증
+# ──────────────────────────────────────────────────────────────
+
+class TestTitlePatternSync:
+    """TITLE_STRONG/WEAK_PATTERNS가 publisher_bot·pipeline 모두에서 동일하게 사용됨"""
+
+    def test_손해_recognized_publisher(self):
+        """publisher_bot: '손해' → True"""
+        from bots.publisher_bot import _title_has_click_pattern
+        assert _title_has_click_pattern('CEO가 주식 팔 때 따라 팔면 손해')
+
+    def test_time_result_recognized_publisher(self):
+        """publisher_bot: '3개월 만에' → True"""
+        from bots.publisher_bot import _title_has_click_pattern
+        assert _title_has_click_pattern('3개월 만에 Google 상위 노출 달성')
+
+    def test_낮아진다_recognized_publisher(self):
+        """publisher_bot: '낮아진다' → True"""
+        from bots.publisher_bot import _title_has_click_pattern
+        assert _title_has_click_pattern('ROE가 낮으면 내 통장 이자도 낮아진다')
+
+    def test_pipeline_늘어난다_recognized(self):
+        """pipeline: '늘어난다' → True (기존 publisher_bot에는 없던 패턴)"""
+        from bots.pipeline import _title_has_click_pattern
+        assert _title_has_click_pattern('내부 링크 넣으면 체류시간이 늘어난다'), \
+            "pipeline._title_has_click_pattern이 '늘어난다'를 인식하지 못함"
+
+    def test_pipeline_손해_recognized(self):
+        """pipeline: '손해' → True"""
+        from bots.pipeline import _title_has_click_pattern
+        assert _title_has_click_pattern('팔면 손해')

@@ -16,6 +16,7 @@
 import json
 import logging
 import os
+from bots.prompt_layer.writer_review import TITLE_STRONG_PATTERNS, TITLE_WEAK_PATTERNS
 import re
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -145,19 +146,8 @@ def check_safety(article: dict, safety_cfg: dict) -> tuple[bool, str]:
 
 
 def _title_has_click_pattern(title: str) -> bool:
-    """조회수 1만+ 블로그 분석 기반 제목 클릭 유발 패턴 검사."""
-    _LOSS_FRAME = re.compile(r'(안 하면|모르면|못하면|안 받으면|하지 않으면|낮아진다|손해)')
-    _NUMBER_TITLE = re.compile(r'[0-9]+\s*(가지|개|초|원|배|번|단계|분|주|달|년|위|명|억|만원)')
-    _REVERSE_TITLE = re.compile(r'(하지 마세요|신청하지 마|사지 마세요|따라 하지)')
-    _QUESTION_TITLE = re.compile(r'[?？]|왜\s|어떻게\s|얼마나\s')
-    _HOW_TO_TITLE = re.compile(r'(방법|하는 법|가이드|전략|비결|공식|원리|이유)')
-    _ACTION_RESULT = re.compile(
-        r'[가-힣]{2,}면.{0,20}(된다|줄어든다|달라진다|빨라진다|쉬워진다|낸다|바뀐다|오른다|내린다|낮아진다)'
-    )
-    return any(p.search(title) for p in [
-        _LOSS_FRAME, _NUMBER_TITLE, _REVERSE_TITLE,
-        _QUESTION_TITLE, _HOW_TO_TITLE, _ACTION_RESULT,
-    ])
+    """조회수 1만+ 블로그 분석 기반 제목 클릭 유발 패턴 검사 (writer_review 공통 상수 사용)."""
+    return any(p.search(title) for p in TITLE_STRONG_PATTERNS + TITLE_WEAK_PATTERNS)
 
 
 def replace_raw_terms(text: str) -> str:
