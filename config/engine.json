@@ -2,9 +2,9 @@
   "_comment": "The Day 블로그 자동 수익 엔진 — 엔진 설정 (v3)",
   "_updated": "2026-04-08",
   "token_budget": {
-    "session_limit": 200000,
+    "session_limit": 300000,
     "budget_ratio": 0.40,
-    "_comment": "budget = session_limit * budget_ratio = 200,000 * 0.40 = 80,000 토큰"
+    "_comment": "budget = session_limit * budget_ratio = 300,000 * 0.40 = 120,000 토큰 (재시도 7회 × ~11,000 = 77,000 → 120,000으로 여유 확보)"
   },
   "writing": {
     "provider": "openclaw",
