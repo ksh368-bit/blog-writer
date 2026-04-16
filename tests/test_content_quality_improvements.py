@@ -558,3 +558,82 @@ class TestRevisionFeedbackHeuristicRules:
         assert '18자' not in result, (
             "짧은 문장 피드백이 없는데 18자 규칙이 추가됐다. 관련 없는 규칙을 추가하면 프롬프트가 길어진다."
         )
+
+
+# ─── 제목 정규화 버그 / 리스트 오탐 ────────────────────────────────────────────
+
+
+class TestNormalizeTitleNumberComma:
+    """_normalize_title_text가 숫자 속 쉼표를 잘못 잘라내는 버그 방지"""
+
+    def _normalize(self, text: str) -> str:
+        from bots.writer_bot import _normalize_title_text
+        return _normalize_title_text(text)
+
+    def test_number_comma_not_stripped(self):
+        """'1,425원' 같은 숫자 속 쉼표에서 뒷부분을 잘라내면 안 된다"""
+        title = '달러-원 1,425원이 연말 목표라면 지금 환전 전략을 바꿔야 한다'
+        result = self._normalize(title)
+        assert '425' in result, (
+            f"숫자 속 쉼표에서 제목이 잘렸다: {result!r}\n"
+            "r',\\s*.+$' 패턴이 '1,425원' 중간을 절삭하는 버그. "
+            "한글 부제 제거 패턴은 콤마 뒤 공백+한글에만 적용해야 한다."
+        )
+
+    def test_korean_subtitle_after_comma_stripped(self):
+        """콤마 뒤 한글 부제목은 여전히 제거되어야 한다"""
+        title = '달러-원 전망, 지금 환전해야 할까'
+        result = self._normalize(title)
+        assert result == '달러-원 전망', (
+            f"한글 부제 제거가 작동하지 않는다: {result!r}"
+        )
+
+    def test_number_with_comma_and_korean_subtitle(self):
+        """'1,425원, 지금 바꿔야 할까' — 한글 부제만 제거, 숫자 보존"""
+        title = '달러-원 1,425원, 지금 환전해야 하나'
+        result = self._normalize(title)
+        assert '1,425' in result, (
+            f"숫자 '1,425'가 사라졌다: {result!r}"
+        )
+        assert '지금 환전해야 하나' not in result, (
+            f"한글 부제가 제거되지 않았다: {result!r}"
+        )
+
+
+class TestHeuristicListSentenceFalsePositive:
+    """<ul><li> 목록이 초장문 단일 문장으로 오탐되는 버그 방지"""
+
+    def _heuristic(self, body: str):
+        from bots.writer_bot import _heuristic_review
+        return _heuristic_review(body, require_relatable=False)
+
+    def test_li_items_not_flagged_as_long_sentence(self):
+        """<ul><li> 목록 항목들이 합쳐져 초장문으로 오탐돼서는 안 된다"""
+        body = (
+            '<p>이 기능을 활용하면 다음이 가능하다.</p>'
+            '<ul>'
+            '<li>코드 리뷰: 에디터 창을 열어두고 구체적인 함수나 로직에 대해 물어보기</li>'
+            '<li>문서 편집: 작성 중인 글의 문법·논리·톤 검토를 한 번의 클릭으로 받기</li>'
+            '<li>데이터 분석: 스프레드시트나 대시보드를 보면서 추세 해석과 인사이트 얻기</li>'
+            '<li>프레젠테이션 준비: 슬라이드 내용 검증과 발표 포인트 구성 조언 받기</li>'
+            '</ul>'
+            '<p>이 조합으로 여러 창을 오가는 시간이 줄어든다.</p>'
+        )
+        ok, msg = self._heuristic(body)
+        long_sentence_flags = [
+            line for line in msg.splitlines()
+            if '문장이 너무 길고 딱딱하다' in line and '코드 리뷰' in line
+        ]
+        assert long_sentence_flags == [], (
+            f"<li> 항목이 합쳐진 초장문을 오탐하고 있다:\n"
+            + '\n'.join(long_sentence_flags)
+        )
+
+    def test_normal_long_sentence_still_flagged(self):
+        """일반 긴 문장은 여전히 flagged 돼야 한다 (회귀 방지)"""
+        body = (
+            '<p>이 구체적인 숫자가 나온 이유는 국제유가가 불안정해지면 새 공급처를 찾아 '
+            '계약을 체결하고 배에 실어 한국까지 도착하는 데 걸리는 기간이 대략 6주에서 8주이기 때문이다.</p>'
+        )
+        ok, msg = self._heuristic(body)
+        assert '문장이 너무 길고 딱딱하다' in msg, "일반 초장문 문장에 경고가 없음 (회귀)"

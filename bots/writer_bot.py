@@ -192,7 +192,7 @@ def _normalize_h2_text(text: str) -> str:
 def _normalize_title_text(text: str) -> str:
     cleaned = re.sub(r'<[^>]+>', '', _replace_raw_terms(text)).strip()
     cleaned = re.sub(r'\s+', ' ', cleaned)
-    cleaned = re.sub(r',\s*.+$', '', cleaned)
+    cleaned = re.sub(r',\s+[가-힣].+$', '', cleaned)  # 콤마+공백+한글 부제만 제거 (숫자 속 쉼표 보호)
     cleaned = re.sub(r'\s*(그리고|인데|인데도|왜|무엇이냐|무슨 뜻|다음 선택지).+$', '', cleaned)
     if len(cleaned) <= 50:
         return cleaned
@@ -921,6 +921,9 @@ def _split_sentences(text: str) -> list[str]:
 def _heuristic_review(body: str, require_relatable: bool = True) -> tuple[bool, str]:
     # H2/H3 제목은 짧은 구문이 정상이므로 문장 밀도·길이 검사에서 제외
     body_no_headers = re.sub(r'<h[23][^>]*>.*?</h[23]>', ' ', body, flags=re.IGNORECASE | re.DOTALL)
+    # <li> 항목이 공백만으로 합쳐지면 전체가 하나의 초장문 "문장"으로 오탐됨
+    # 닫는 태그를 마침표+공백으로 대체해 각 항목이 개별 문장으로 분리되게 함
+    body_no_headers = re.sub(r'</li>', '. ', body_no_headers, flags=re.IGNORECASE)
     plain = re.sub(r'<[^>]+>', ' ', body_no_headers)
     sentences = _split_sentences(plain)
     if not sentences:
@@ -992,7 +995,10 @@ def _heuristic_review(body: str, require_relatable: bool = True) -> tuple[bool, 
             issues.append(f'- "{sentence}" → 결론은 세지만 구체 근거가 부족한 상투 문장이다.')
 
         if len(sentence) > 80 and not any(token in sentence for token in ('쉽게 말하면', '즉', '예를 들면', '이를테면')):
-            issues.append(f'- "{sentence}" → 문장이 너무 길고 딱딱하다. 일반 독자 눈높이에서 한 번 더 풀어줘야 한다.')
+            # → 포함(목록 열거) 또는 콜론+괄호 열거 문장은 HTML li 태그 제거 후 합쳐진 경우가 많으므로 예외
+            _is_list_sentence = '→' in sentence or re.search(r':\s+\S[^.]*\(', sentence)
+            if not _is_list_sentence:
+                issues.append(f'- "{sentence}" → 문장이 너무 길고 딱딱하다. 일반 독자 눈높이에서 한 번 더 풀어줘야 한다.')
 
         capitalized_terms = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?', sentence)
         unique_caps = {term.strip() for term in capitalized_terms}
