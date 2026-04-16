@@ -10,6 +10,15 @@ from pathlib import Path
 
 _HEURISTIC_PATTERNS_PATH = Path(__file__).parent.parent.parent / 'data' / 'heuristic_patterns.json'
 
+# Q2, Q8 공통 — 선언형(declarative) 도입부 감지
+_DECLARATIVE_END = re.compile(
+    r'(이다|입니다|됩니다|합니다|줍니다|습니다)[.\s]*$'
+)
+_SUBJECT_PARTICLE = re.compile(r'^.{0,20}[은는이가]\s')
+_HOOK_SIGNALS = re.compile(
+    r'[0-9]|었|았|했|는데|인데|지만|면서도|[?？]|보니|했더니'
+)
+
 # ── 제목 클릭 유발 패턴 (QT1) — publisher_bot.py·pipeline.py와 공유 ──────────
 TITLE_STRONG_PATTERNS = [
     re.compile(r'(안 하면|모르면|못하면|안 받으면|이거 모르면|하지 않으면|낮아진다|손해)'),
@@ -332,9 +341,6 @@ def presentation_review(
         )
 
     # Q2: 도입부 설명체 감지 — "X는 Y이다/입니다" 형태의 정의·사전 설명으로 시작하면 훅이 없음
-    _DECLARATIVE_END = re.compile(r'(이다|입니다|됩니다|합니다|줍니다|습니다)[.\s]*$')
-    _SUBJECT_PARTICLE = re.compile(r'^.{0,20}[은는이가]\s')
-    _HOOK_SIGNALS = re.compile(r'[0-9]|었|았|했|는데|인데|지만|면서도|[?？]|보니|했더니')
     _first_p = re.search(r'<p>(.*?)</p>', body, re.IGNORECASE | re.DOTALL)
     if _first_p:
         _first_text = re.sub(r'<[^>]+>', '', _first_p.group(1)).strip()
@@ -444,9 +450,6 @@ def presentation_review(
 
     # Q8: 섹션별 두괄식 확장 — 2번째 이후 H2 섹션 첫 문단도 선언체("X는 Y이다") 시작 감지
     # Q2는 글 전체의 첫 문단만 검사하지만, 인기 블로그는 각 섹션도 두괄식으로 시작해야 함
-    _DECLARATIVE_END = re.compile(r'(이다|입니다|됩니다|합니다|줍니다|습니다)[.\s]*$')
-    _SUBJECT_PARTICLE = re.compile(r'^.{0,20}[은는이가]\s')
-    _HOOK_SIGNALS = re.compile(r'[0-9]|었|았|했|는데|인데|지만|면서도|[?？]|보니|했더니')
     _section_re = re.compile(r'<h2[^>]*>.*?</h2>\s*((?:<p>.*?</p>\s*)*)', re.IGNORECASE | re.DOTALL)
     _section_matches = list(_section_re.finditer(body))
     _declarative_sections: list[str] = []
