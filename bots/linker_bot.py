@@ -310,7 +310,8 @@ def _score_relevance(candidate: dict, current_title: str, current_body_plain: st
         return total
 
     score = 0.0
-    score += _matched_words(candidate.get('title', ''), 0.15, 0.30)
+    _no_kp = not candidate.get('key_points')
+    score += _matched_words(candidate.get('title', ''), 0.30 if _no_kp else 0.15, 0.45 if _no_kp else 0.30)
     score += _matched_words(candidate.get('meta', ''), 0.08, 0.15)
     score += _matched_words(candidate.get('topic', ''), 0.08, 0.15)
 
@@ -359,7 +360,7 @@ def insert_internal_links(html_content: str, article: dict, max_links: int = 3) 
         if rec['title'] == current_title:
             continue
         score = _score_relevance(rec, current_title, plain_body)
-        if score >= 0.50:
+        if score >= 0.40:
             scored.append((score, rec))
     scored.sort(key=lambda x: -x[0])
     top_related = [rec for _, rec in scored[:max_links]]
