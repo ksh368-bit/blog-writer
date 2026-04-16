@@ -104,6 +104,22 @@ def compose_revision_feedback(feedback: str, attempt: int, min_revision_rounds: 
             lines.append('- 약어만 단독으로 던지지 말고, 첫 등장 문장에서 정체를 같이 설명해.')
             acronym_rules = '\n'.join(lines) + '\n'
 
+    short_sentence_rules = ''
+    if '너무 짧아 밀도가 부족하다' in feedback:
+        short_sentence_rules = (
+            '- 모든 문장은 최소 18자 이상으로 써. '
+            '"봉제도 마찬가지다", "가방이 안 팔린다" 같은 10~15자 전환 문장은 금지다.\n'
+            '- 짧은 연결 문장이 필요하면 앞 문장에 "왜냐하면", "예를 들어" 등을 붙여 한 문장으로 합쳐라.\n'
+        )
+
+    proper_noun_rules = ''
+    if '고유명사나 서비스 이름을 한 문장에 너무 많이 몰아 넣었다' in feedback:
+        proper_noun_rules = (
+            '- 한 문장에 대문자 영문 고유명사(브랜드명·서비스명)가 4개 이상 나오면 반드시 두 문장으로 분리해.\n'
+            '- 예: "A, B, C 같은 브랜드들이 모두 X에 속한다" → '
+            '"A, B, C는 모두 X 소속이다. 여기에 D, E까지 더하면..." 식으로 나눠 써.\n'
+        )
+
     focus_map = {
         2: '제목과 첫 문단을 가장 먼저 갈아엎어. 첫 문장은 바로 숫자, 고유명사, 사건으로 시작해.',
         3: '문단 중간의 연결 문장을 정리해. 짧은 예고 문장 없이 한 문장 안에서 설명까지 끝내.',
@@ -131,6 +147,8 @@ def compose_revision_feedback(feedback: str, attempt: int, min_revision_rounds: 
         f"{actionability_rules}"
         f"{structure_rules}"
         f"{acronym_rules}"
+        f"{short_sentence_rules}"
+        f"{proper_noun_rules}"
         "- 이번 출력에서는 실패 문장을 절대 재사용하지 마.\n\n"
         "[이번 회차 우선 과제]\n"
         f"- {focus}\n\n"

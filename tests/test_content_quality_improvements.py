@@ -443,3 +443,118 @@ class TestProperNounDensityThreshold:
         sentence = 'Claude Code와 Cursor와 ChatGPT와 Gemini를 동시에 열어서 비교했다.'
         noun_issues = self._heuristic(sentence)
         assert noun_issues, f"4개 고유명사 경고 없음"
+
+
+class TestListSentenceLengthExemption:
+    """HTML 목록이 인라인으로 합쳐진 '→ 열거' 문장은 80자 길이 경고에서 제외해야 한다.
+
+    근본 원인: <ul><li> 태그 제거 후 목록 항목들이 하나의 긴 문장으로 합쳐짐
+    → '문장이 너무 길고 딱딱하다' 경고가 9회 반복 발생 → 토큰 예산 소진
+    """
+
+    def _length_issues(self, sentence: str) -> list[str]:
+        from bots.writer_bot import _heuristic_review
+        body = f'<p>{sentence}</p>'
+        _, msg = _heuristic_review(body, require_relatable=False)
+        return [l for l in msg.split('\n') if '너무 길고 딱딱' in l]
+
+    def test_arrow_list_sentence_no_length_warning(self):
+        """→ 포함 목록형 문장 (80자 초과) → 길이 경고 없음"""
+        sentence = (
+            '원유를 정제하면 다양한 제품이 나온다: 플라스틱 → 용기, 포장재, 일회용품 '
+            '의약품 원료 → 감기약, 주사제, 항생제 합성섬유 → 옷, 침구류, 신발 화학비료 → 농산물 생산.'
+        )
+        assert len(sentence) > 80, f"테스트 전제: 80자 초과 문장 (현재 {len(sentence)}자)"
+        issues = self._length_issues(sentence)
+        assert issues == [], f"→ 목록 문장에 불필요한 길이 경고: {issues}"
+
+    def test_colon_paren_list_sentence_no_length_warning(self):
+        """콜론+괄호 열거 문장 (80자 초과) → 길이 경고 없음"""
+        sentence = (
+            '정부가 지시한 대체원유 확보 대상: 러시아 (카스피해 유전) 아프리카 (나이지리아, 앙골라) '
+            '남미 (베네수엘라, 브라질) 동남아 (말레이시아, 인도네시아).'
+        )
+        assert len(sentence) > 80, f"테스트 전제: 80자 초과 문장 (현재 {len(sentence)}자)"
+        issues = self._length_issues(sentence)
+        assert issues == [], f"콜론+괄호 목록 문장에 불필요한 길이 경고: {issues}"
+
+    def test_normal_long_sentence_still_warned(self):
+        """→ / 콜론 없는 일반 긴 문장은 여전히 경고"""
+        sentence = (
+            '이 구체적인 숫자가 나온 이유는 국제유가가 불안정해지면 새 공급처를 찾아 '
+            '계약을 체결하고 배에 실어 한국까지 도착하는 데 걸리는 기간이 대략 6주에서 8주이기 때문이다.'
+        )
+        assert len(sentence) > 80, "테스트 전제: 80자 초과 문장"
+        issues = self._length_issues(sentence)
+        assert issues != [], f"일반 긴 문장에 경고가 없음 (회귀)"
+
+
+# ─── 룰 기반 검수 / 재작성 피드백 정합성 ────────────────────────────────────────────
+
+
+class TestWritingPromptHeuristicAlignment:
+    """writer_prompt 작성 규칙이 _heuristic_review 차단 기준과 일치하는지 확인"""
+
+    def _prompt(self):
+        """compose_writer_prompt의 두 번째 반환값(user prompt, 작성 지침 포함)을 반환"""
+        from bots.prompt_layer.writer_prompt import compose_writer_prompt
+        _, prompt = compose_writer_prompt(
+            topic='test', corner='쉬운세상', description='test',
+            source='', published_at=''
+        )
+        return prompt
+
+    def test_system_prompt_contains_min_sentence_length(self):
+        """writing 지침 prompt에 18자 최소 문장 길이 규칙이 포함돼야 한다"""
+        prompt = self._prompt()
+        assert '18자' in prompt, (
+            "writer_prompt에 최소 18자 문장 길이 규칙이 없다. "
+            "_heuristic_review는 18자 미만 문장을 차단하므로 writing 지침에도 동일 기준이 있어야 한다."
+        )
+
+    def test_system_prompt_proper_noun_limit_matches_heuristic(self):
+        """writing 지침 prompt의 고유명사 규칙이 heuristic(4개 이상 차단)과 일치해야 한다"""
+        prompt = self._prompt()
+        assert '4개' in prompt, (
+            "writer_prompt에 고유명사 4개 이상 차단 기준이 없다. "
+            "_heuristic_review는 unique_caps >= 4일 때 차단하므로 writing 지침에 동일 임계값이 있어야 한다."
+        )
+
+
+class TestRevisionFeedbackHeuristicRules:
+    """compose_revision_feedback이 heuristic 실패 시 특화 규칙을 추가하는지 확인"""
+
+    def _build(self, feedback: str, attempt: int = 2) -> str:
+        from bots.prompt_layer.writer_revision import compose_revision_feedback
+        return compose_revision_feedback(feedback, attempt=attempt, min_revision_rounds=1)
+
+    def test_short_sentence_feedback_adds_min_length_rule(self):
+        """짧은 문장 heuristic 실패 피드백이 있으면 18자 최소 규칙을 추가해야 한다"""
+        feedback = '[룰 기반 검수 실패]\n- "봉제도 마찬가지다." → 너무 짧아 밀도가 부족하다.'
+        result = self._build(feedback)
+        assert '18자' in result, (
+            "짧은 문장 실패 피드백에 18자 최소 규칙이 포함되지 않았다. "
+            "재작성 프롬프트에 구체 기준이 없으면 writer가 같은 짧은 문장을 반복 생성한다."
+        )
+
+    def test_proper_noun_feedback_adds_split_rule(self):
+        """고유명사 heuristic 실패 피드백이 있으면 문장 분리 규칙을 추가해야 한다"""
+        feedback = (
+            '[룰 기반 검수 실패]\n'
+            '- "The North Face, Vans, Timberland, Jansport" → '
+            '고유명사나 서비스 이름을 한 문장에 너무 많이 몰아 넣었다.'
+        )
+        result = self._build(feedback)
+        assert '두 문장' in result or '분리' in result, (
+            "고유명사 과다 실패 피드백에 문장 분리 규칙이 포함되지 않았다."
+        )
+
+    def test_unrelated_feedback_no_short_sentence_rule(self):
+        """짧은 문장 피드백이 없으면 18자 규칙이 추가되지 않아야 한다"""
+        feedback = '[룰 기반 검수 실패]\n- "결국 이것이 핵심이다." → 전환 문장에 가깝고 구체 정보가 약하다.'
+        result = self._build(feedback)
+        # 18자가 없거나 있어도 짧은문장 규칙 없는 경우 통과
+        # (이 테스트는 불필요한 노이즈 방지 목적)
+        assert '18자' not in result, (
+            "짧은 문장 피드백이 없는데 18자 규칙이 추가됐다. 관련 없는 규칙을 추가하면 프롬프트가 길어진다."
+        )
