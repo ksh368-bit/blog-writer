@@ -15,8 +15,10 @@
 """
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from bots.prompt_layer.writer_review import TITLE_STRONG_PATTERNS, TITLE_WEAK_PATTERNS
+from bots.publish_validation import validate_article_before_publish
 import re
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -38,12 +40,14 @@ DATA_DIR = BASE_DIR / 'data'
 LOG_DIR = BASE_DIR / 'logs'
 TOKEN_PATH = BASE_DIR / 'token.json'
 LOG_DIR.mkdir(exist_ok=True)
+PENDING_REVIEW_DIR = DATA_DIR / 'pending_review'
+PENDING_REVIEW_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler(LOG_DIR / 'publisher.log', encoding='utf-8'),
+        RotatingFileHandler(LOG_DIR / 'publisher.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'),
         logging.StreamHandler(),
     ]
 )
@@ -62,6 +66,7 @@ TEST_MARKERS = ('테스트', '샘플', 'dummy', '[test]', '(test)')
 SCOPES = [
     'https://www.googleapis.com/auth/blogger',
     'https://www.googleapis.com/auth/webmasters',
+    # 'https://www.googleapis.com/auth/indexing',  # ← Cloud Console에서 Indexing API 활성화 후 주석 해제 + token.json 삭제 후 재발급
 ]
 
 
@@ -87,6 +92,11 @@ def get_google_credentials() -> Credentials:
 
 
 # ─── 안전장치 ─────────────────────────────────────────
+
+# 뉴스 헤드라인 형식 감지 — 줄임표(…) 또는 인용 닉네임('달인' …)으로 시작
+# U+2026(…), U+0027(ASCII '), U+2018('), U+2019(') 모두 포함
+_NEWS_HEADLINE_RE = re.compile(r'…|^[\u0027\u2018\u2019]')
+
 
 def check_safety(article: dict, safety_cfg: dict) -> tuple[bool, str]:
     """
@@ -128,11 +138,17 @@ def check_safety(article: dict, safety_cfg: dict) -> tuple[bool, str]:
     if quality_score < min_score:
         return True, f'품질 점수 {quality_score}점 (자동 발행 최소: {min_score}점)'
 
+    # 제목 공통 변수 — 아래 2개 검사에서 재사용
+    title = article.get('title', '')
+    _has_korean = bool(re.search(r'[가-힣]', title))
+
+    # 뉴스 헤드라인 형식 감지 — 클릭 패턴 검사보다 먼저 실행 (22억 등이 있어도 차단)
+    if title and _has_korean and _NEWS_HEADLINE_RE.search(title):
+        return True, f'뉴스 헤드라인 형식 제목 감지 — 블로그 제목으로 변환 필요: "{title[:40]}"'
+
     # 제목 클릭 유발 패턴 검사 (조회수 1만+ 블로그 분석 기준, 한국어 제목만 적용)
     # normalize_title_text 잘림으로 패턴이 소실됐을 때를 대비해 원본 제목도 함께 체크
-    title = article.get('title', '')
     _original_title = article.get('_original_title', title)
-    _has_korean = bool(re.search(r'[가-힣]', title))
     if title and _has_korean and not (_title_has_click_pattern(title) or _title_has_click_pattern(_original_title)):
         return True, f'제목 클릭 유발 패턴 없음: "{title}" — 손실 프레임·숫자·역발상·질문·방법·행동→결과 중 하나 필요'
 
@@ -180,7 +196,8 @@ def normalize_title_text(text: str) -> str:
         candidate = part.strip()
         if 14 <= len(candidate) <= 38:
             return candidate
-    return cleaned[:38].rstrip()
+    # 구분자로 적절히 분리되지 않는 경우: 잘라내지 않고 전체 반환 (잘린 제목 방지)
+    return cleaned
 
 
 _AI_INSTRUCTION_RE = re.compile(
@@ -381,6 +398,24 @@ def insert_adsense_placeholders(html: str) -> str:
             break
 
     return str(soup)
+
+
+def _inject_post_url(html: str, post_url: str) -> str:
+    """발행 후 확정된 URL을 JSON-LD @id 와 og:url 메타태그에 주입.
+    Blogger 발행 직후 posts().patch() 로 전달하기 위한 헬퍼.
+    """
+    if not post_url:
+        return html
+    # JSON-LD @id 업데이트 (빈 문자열 → 실제 URL)
+    html = re.sub(r'"@id":\s*""', f'"@id": "{post_url}"', html)
+    # og:url 미존재 시 twitter:card 앞에 삽입 (OG 그룹 마지막 위치)
+    if 'og:url' not in html:
+        html = html.replace(
+            '<meta name="twitter:card"',
+            f'<meta property="og:url" content="{post_url}"/>\n<meta name="twitter:card"',
+            1,
+        )
+    return html
 
 
 def build_json_ld(article: dict, blog_url: str = '') -> str:
@@ -621,13 +656,11 @@ def find_duplicate_publication(article: dict, similarity_threshold: float = 0.88
 
 def save_pending_review(article: dict, reason: str):
     """수동 검토 대기 글 저장"""
-    pending_dir = DATA_DIR / 'pending_review'
-    pending_dir.mkdir(exist_ok=True)
     record = {**article, 'pending_reason': reason, 'created_at': datetime.now().isoformat()}
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_pending.json"
-    with open(pending_dir / filename, 'w', encoding='utf-8') as f:
+    with open(PENDING_REVIEW_DIR / filename, 'w', encoding='utf-8') as f:
         json.dump(record, f, ensure_ascii=False, indent=2)
-    return pending_dir / filename
+    return PENDING_REVIEW_DIR / filename
 
 
 def load_pending_review_file(filepath: str) -> dict:
@@ -637,10 +670,8 @@ def load_pending_review_file(filepath: str) -> dict:
 
 def find_existing_pending_review(article: dict, reason: str) -> Path | None:
     """같은 제목 + 같은 사유의 대기 파일이 이미 있으면 반환"""
-    pending_dir = DATA_DIR / 'pending_review'
-    pending_dir.mkdir(exist_ok=True)
     title = article.get('title', '').strip()
-    for f in sorted(pending_dir.glob('*_pending.json')):
+    for f in sorted(PENDING_REVIEW_DIR.glob('*_pending.json')):
         try:
             data = json.loads(f.read_text(encoding='utf-8'))
         except Exception:
@@ -675,10 +706,22 @@ def publish_with_result(article: dict) -> tuple[bool, str]:
         logger.warning(f"중복 발행 차단: {duplicate_reason}")
         return False, duplicate_reason
 
-    # 안전장치 검사 — 경고 로그만 남기고 바로 발행 (pending 단계 없음)
+    # _write_quality_passed=False: 작성 단계에서 품질 검수 미완료 (토큰 초과/최대 재시도)
+    # check_safety 결과와 무관하게 독립적으로 보류 처리 — 이 체크가 'if needs_review:' 안에
+    # 있으면 check_safety가 False를 반환할 때 도달하지 못하는 버그가 생김 (VPN 제목 잘림 원인)
+    if not article.get('_write_quality_passed', True):
+        _qfail_reason = '품질 검수 미완료 — 토큰 예산 초과 또는 최대 재시도 도달'
+        logger.warning(f"[발행 보류] {_qfail_reason}: {article.get('title', '')}")
+        return False, _qfail_reason
+
     needs_review, review_reason = check_safety(article, safety_cfg)
     if needs_review:
-        logger.warning(f"[안전장치 경고] {review_reason} — 바로 발행 진행")
+        # 뉴스 헤드라인 형식 → 항상 pending
+        if '뉴스 헤드라인 형식' in review_reason:
+            logger.warning(f"[발행 보류] {review_reason}: {article.get('title', '')}")
+            return False, review_reason
+        else:
+            logger.warning(f"[안전장치 경고] {review_reason} — 바로 발행 진행")
 
     # 변환봇이 미리 생성한 HTML이 있으면 재사용, 없으면 직접 변환
     if article.get('_html_content'):
@@ -713,6 +756,21 @@ def publish_with_result(article: dict) -> tuple[bool, str]:
     except Exception as e:
         logger.error(f"Blogger 발행 실패: {e}")
         return False, f'Blogger 발행 실패: {e}'
+
+    # JSON-LD @id + og:url 주입 — 발행 후 확정된 URL로 업데이트
+    if post_url and not test_mode:
+        updated_html = _inject_post_url(full_html, post_url)
+        if updated_html != full_html:
+            try:
+                _svc = build('blogger', 'v3', credentials=creds)
+                _svc.posts().patch(
+                    blogId=BLOG_MAIN_ID,
+                    postId=post_result.get('id', ''),
+                    body={'content': updated_html},
+                ).execute()
+                logger.info(f"JSON-LD @id + og:url 업데이트: {post_url}")
+            except Exception as e:
+                logger.warning(f"메타데이터 URL 업데이트 실패 (비치명적): {e}")
 
     # Search Console 제출
     if post_url and not test_mode:
@@ -754,6 +812,17 @@ def approve_pending(filepath: str) -> bool:
         article.pop('pending_reason', None)
         article.pop('created_at', None)
 
+        # 중복 발행 차단 — approve_pending은 check_safety를 우회하므로 여기서 직접 체크
+        duplicate_reason = find_duplicate_publication(article)
+        if duplicate_reason:
+            logger.warning(f"[중복 차단] approve_pending: {duplicate_reason} — {article.get('title', '')}")
+            send_telegram(
+                f"⛔ <b>[중복 차단]</b> 이미 발행된 출처와 동일\n\n"
+                f"📌 {article.get('title', '')}\n"
+                f"사유: {duplicate_reason}"
+            )
+            return False
+
         # QP1: 플레이스홀더 앱명 감지 경고 (차단은 아님 — 수동 승인이므로 운영자 판단 우선)
         _PLACEHOLDER_APP = re.compile(r'\b[A-Z][A-Za-z]{1,}\.[ \u00a0][가-힣]')
         _title = article.get('title', '')
@@ -767,10 +836,29 @@ def approve_pending(filepath: str) -> bool:
                 f'실제 앱명으로 교체 후 재발행을 권장합니다.'
             )
 
+        # 발행 전 검증 (제목-본문 일치, 품질, 출처)
+        is_valid, validation_errors = validate_article_before_publish(article)
+        if not is_valid:
+            err_summary = ' | '.join(validation_errors[:3])
+            logger.warning(f"[발행 전 검증 실패] {article.get('title', '')} — {err_summary}")
+            send_telegram(
+                f"⛔ <b>[검증 실패] 발행 차단</b>\n\n"
+                f"📌 {article.get('title', '')}\n"
+                f"사유: {err_summary}"
+            )
+            return False
+
         # 안전장치 우회하여 강제 발행
         body_html, toc_html = markdown_to_html(article.get('body', ''))
         body_html = insert_adsense_placeholders(body_html)
         full_html = build_full_html(article, body_html, toc_html)
+
+        # 관련 글 링크 삽입
+        try:
+            import bots.linker_bot as linker_bot
+            full_html = linker_bot.process(article, full_html)
+        except Exception as e:
+            logger.warning(f"링크 삽입 건너뜀: {e}")
 
         creds = get_google_credentials()
         test_mode = is_test_article(article)
@@ -814,10 +902,8 @@ def reject_pending(filepath: str):
 
 def get_pending_list() -> list[dict]:
     """수동 검토 대기 목록 반환"""
-    pending_dir = DATA_DIR / 'pending_review'
-    pending_dir.mkdir(exist_ok=True)
     result = []
-    for f in sorted(pending_dir.glob('*_pending.json')):
+    for f in sorted(PENDING_REVIEW_DIR.glob('*_pending.json')):
         try:
             data = json.loads(f.read_text(encoding='utf-8'))
             data['_filepath'] = str(f)
@@ -827,22 +913,29 @@ def get_pending_list() -> list[dict]:
     return result
 
 
+def run_approve_all_pending() -> int:
+    """pending_review 전체 글 자동 발행. 성공 건수 반환 (17시 자동화용)."""
+    pending = get_pending_list()
+    if not pending:
+        logger.info("대기 중인 글 없음")
+        return 0
+    success_count = 0
+    for item in pending:
+        fp = item.get('_filepath', '')
+        if fp and approve_pending(fp):
+            success_count += 1
+    logger.info(f"자동 발행 완료: {success_count}/{len(pending)}편")
+    return success_count
+
+
 if __name__ == '__main__':
-    # 테스트용: 샘플 아티클 발행 시도
-    sample = {
-        'title': '테스트 글',
-        'meta': '테스트 메타 설명',
-        'slug': 'test-article',
-        'tags': ['테스트', 'AI'],
-        'corner': '쉬운세상',
-        'body': '## 제목\n\n본문 내용입니다.\n\n## 결론\n\n마무리입니다.',
-        'coupang_keywords': ['키보드'],
-        'sources': [
-            {'url': 'https://example.com/1', 'title': '출처1', 'date': '2026-03-24'},
-            {'url': 'https://example.com/2', 'title': '출처2', 'date': '2026-03-24'},
-        ],
-        'disclaimer': '',
-        'quality_score': 80,
-    }
-    result = publish(sample)
-    print('발행 결과:', result)
+    import sys
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ''
+    if cmd == 'approve_pending':
+        run_approve_all_pending()
+    elif cmd == 'approve_one' and len(sys.argv) > 2:
+        sys.exit(0 if approve_pending(sys.argv[2]) else 1)
+    else:
+        print("Usage: python3 -m bots.publisher_bot approve_pending")
+        print("       python3 -m bots.publisher_bot approve_one <filepath>")
+        sys.exit(1)
