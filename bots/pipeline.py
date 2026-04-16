@@ -14,6 +14,7 @@
 import argparse
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import signal
 import sys
@@ -27,7 +28,12 @@ PIPELINE_SUMMARY_PATH = DATA_DIR / 'pipeline_run_summary.json'
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
-_log_handlers: list = [logging.FileHandler(LOG_DIR / 'pipeline.log', encoding='utf-8')]
+_log_handlers: list = [RotatingFileHandler(
+    LOG_DIR / 'pipeline.log',
+    maxBytes=5 * 1024 * 1024,  # 5MB
+    backupCount=3,
+    encoding='utf-8',
+)]
 # 터미널에서 직접 실행할 때만 콘솔 출력 추가 (백그라운드 실행 시 리디렉션과 중복 방지)
 if sys.stderr.isatty():
     _log_handlers.append(logging.StreamHandler())
@@ -81,6 +87,22 @@ def _build_attempt_shortfall_message(
         f"주요 사유: {reason_text}\n"
         f"시도한 토픽: {', '.join(total_summary.get('attempted_topics', [])[:3]) or '없음'}"
     )
+
+
+def _check_shortfall(
+    achieved: int,
+    target: int,
+    attempted_writes: int,
+    total_summary: dict,
+    corner: str,
+    slot: str,
+) -> None:
+    """목표 미달 시 알림 (attempted_writes == 0이면 억제)"""
+    if achieved < target and attempted_writes > 0:
+        logger.warning("목표 발행 수 미달: 목표 %s편 / 실제 %s편", target, achieved)
+        _notify_pipeline_issue(
+            _build_attempt_shortfall_message(corner, target, total_summary, attempted_writes, slot=slot)
+        )
 
 
 def step_collect() -> bool:
@@ -561,17 +583,7 @@ def main():
             total_summary.get('manual_review', 0),
         )
         achieved = total_summary.get('published', 0) + total_summary.get('retried_then_published', 0)
-        if achieved < target_publish_count:
-            logger.warning("목표 발행 수 미달: 목표 %s편 / 실제 %s편", target_publish_count, achieved)
-            _notify_pipeline_issue(
-                _build_attempt_shortfall_message(
-                    args.corner,
-                    target_publish_count,
-                    total_summary,
-                    attempted_writes,
-                    slot=args.slot,
-                )
-            )
+        _check_shortfall(achieved, target_publish_count, attempted_writes, total_summary, args.corner, args.slot)
 
     logger.info("=== 파이프라인 완료 ===")
 
