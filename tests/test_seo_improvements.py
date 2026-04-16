@@ -1503,7 +1503,7 @@ class TestNormalizeTitleTruncationSafety:
         }
 
     def test_sanitized_long_title_with_click_pattern_passes_check_safety(self):
-        """publish_with_result 실제 흐름: sanitize 후 잘린 제목으로 check_safety 호출해도 통과"""
+        """구분자 없는 긴 제목은 잘리지 않고 전체 유지 → check_safety 클릭 패턴 통과"""
         from bots.publisher_bot import check_safety, sanitize_article_for_publish
         article = {
             'title': 'Spring AI Playground에서 MCP 도구를 테스트하면 검증이 몇 초 안에 된다',
@@ -1512,13 +1512,14 @@ class TestNormalizeTitleTruncationSafety:
             'sources': [],
             'quality_score': 100,
         }
-        # publish_with_result 흐름 재현: sanitize → check_safety
+        # normalize_title_text 수정 후: 구분자 없는 긴 제목은 잘리지 않음
         sanitized = sanitize_article_for_publish(article)
-        assert len(sanitized['title']) <= 38, f"normalize 안됨: {sanitized['title']}"
-        # 잘린 sanitized article로 check_safety 호출 → 통과해야 함 (RED: 현재 실패)
+        assert sanitized['title'] == article['title'], \
+            f"제목이 의도치 않게 변경됨: {sanitized['title']!r}"
+        # 원본 제목 그대로 check_safety → 클릭 패턴(몇 초) 있으므로 통과
         needs_review, reason = check_safety(sanitized, self._safety_cfg())
         assert needs_review is False or '클릭' not in reason, \
-            f"sanitize 후 잘린 제목이 클릭 패턴 없다고 차단됨: reason={reason}"
+            f"클릭 패턴 있는 제목이 차단됨: reason={reason}"
 
     def test_title_with_method_pattern_still_passes(self):
         """'방법' 포함 제목은 truncation 여부 관계없이 통과"""
@@ -1843,3 +1844,60 @@ class TestTitlePatternSync:
         """pipeline: '손해' → True"""
         from bots.pipeline import _title_has_click_pattern
         assert _title_has_click_pattern('팔면 손해')
+
+
+class TestQ2Q8RegressionDetection:
+    """Q2/Q8 정규식 모듈 상수화 후 동작 동일성 검증"""
+    def _call(self, body):
+        from bots.prompt_layer.writer_review import presentation_review
+        import re
+        article = {'title': '테스트', 'body': body, 'meta': ''}
+        splitter = lambda t: [s.strip() for s in re.split(r'[.!?]', re.sub(r'<[^>]+>', ' ', t)) if s.strip()]
+        return presentation_review(article, raw_term_replacements={}, split_sentences=splitter)
+
+    def test_q2_declarative_intro_detected(self):
+        """선언형 도입부(16자+) → 도입부 설명체 이슈 감지 (Q2)"""
+        # 첫 문단이 15자 초과해야 Q2 검사 대상
+        body = '<p>현재의 기준금리는 동결됩니다.</p>' + '<h2>본론</h2><p>내용</p>' * 3
+        _, msg = self._call(body)
+        assert '도입부 첫 문단' in msg
+
+    def test_q8_declarative_section_detected(self):
+        """선언형 섹션 도입부(16자+) → 섹션 설명체 이슈 감지 (Q8)"""
+        # 두 번째 H2 섹션 첫 문단이 15자 초과해야 Q8 검사 대상
+        body = '<p>훅입니다!</p><h2>S1</h2><p>내용</p><h2>S2</h2><p>현재의 기준금리는 동결됩니다.</p>'
+        _, msg = self._call(body)
+        assert '섹션 첫 문단 설명체' in msg
+
+
+# ──────────────────────────────────────────────────────────────
+# 재발방지: normalize_title_text 구분자 없는 긴 제목 잘림
+# 실제 케이스: "VPN 대신 Cloudflare Mesh로 에이전트 권한 관리하면 한 곳에서만 수정된다"
+#              → cleaned[:38].rstrip() → "...하면 한" 으로 발행됨
+# ──────────────────────────────────────────────────────────────
+
+class TestNormalizeTitleNoSeparatorLongTitle:
+    """구분자(—, -, |, :) 없이 38자 초과인 제목은 잘리지 않아야 한다."""
+
+    def test_long_title_without_separator_is_not_truncated(self):
+        """구분자 없는 긴 제목 → 전체 반환 (잘림 금지)"""
+        from bots.publisher_bot import normalize_title_text
+        title = 'VPN 대신 Cloudflare Mesh로 에이전트 권한 관리하면 한 곳에서만 수정된다'
+        assert len(title) > 38, f"테스트 전제: 38자 초과 (현재 {len(title)}자)"
+        result = normalize_title_text(title)
+        assert result == title, f"제목이 잘렸다: {result!r}"
+
+    def test_long_title_with_separator_still_splits(self):
+        """구분자 있는 긴 제목 → 앞부분 추출 (기존 동작 유지)"""
+        from bots.publisher_bot import normalize_title_text
+        title = 'Cloudflare Mesh 완전 정복 — VPN 대신 에이전트 권한을 한 곳에서 관리하는 법'
+        result = normalize_title_text(title)
+        assert result == 'Cloudflare Mesh 완전 정복', f"separator 분리 실패: {result!r}"
+
+    def test_short_title_unchanged(self):
+        """38자 이하 제목은 그대로"""
+        from bots.publisher_bot import normalize_title_text
+        title = '기준금리가 오르면 손해 — 3가지 대응법'
+        assert len(title) <= 38
+        result = normalize_title_text(title)
+        assert result == title
