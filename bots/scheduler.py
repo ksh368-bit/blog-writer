@@ -1155,13 +1155,10 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone='Asia/Seoul')
     schedule_cfg = load_schedule()
 
-    # schedule.json 기반 동적 잡 (기존)
+    # schedule.json 기반 동적 잡 (collector, ai_writer, analytics, morning_brief)
     job_map = {
         'collector': job_collector,
         'ai_writer': job_ai_writer,
-        'publish_1': lambda: job_publish(1),
-        'publish_2': lambda: job_publish(2),
-        'publish_3': lambda: job_publish(3),
         'analytics': job_analytics_daily,
         'morning_brief': job_morning_brief,
     }
@@ -1172,10 +1169,15 @@ def setup_scheduler() -> AsyncIOScheduler:
 
     # v3 고정 스케줄: 시차 배포
     # 07:00 수집봇 (schedule.json에서 관리)
+    # 07:30 전장반도체 아침 브리핑 (schedule.json에서 관리)
     # 08:00 AI 글 작성 (schedule.json에서 관리)
     scheduler.add_job(job_convert, 'cron', hour=8, minute=30, id='convert')       # 08:30 변환
     scheduler.add_job(lambda: job_publish(1), 'cron',
-                      hour=9, minute=0, id='blog_publish')                         # 09:00 블로그
+                      hour=9, minute=0, id='blog_publish_1')                       # 09:00 블로그 슬롯 1
+    scheduler.add_job(lambda: job_publish(2), 'cron',
+                      hour=13, minute=0, id='blog_publish_2')                      # 13:00 블로그 슬롯 2
+    scheduler.add_job(lambda: job_publish(3), 'cron',
+                      hour=17, minute=0, id='blog_publish_3')                      # 17:00 블로그 슬롯 3
     scheduler.add_job(job_distribute_instagram, 'cron',
                       hour=10, minute=0, id='instagram_dist')                      # 10:00 인스타 카드
     scheduler.add_job(job_distribute_instagram_reels, 'cron',
