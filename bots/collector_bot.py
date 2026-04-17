@@ -304,7 +304,11 @@ def apply_discard_rules(item: dict, rules: dict, published_titles: list[str]) ->
 
         if rule_id == 'no_korean_relevance':
             if item.get('korean_relevance_score', 0) == 0:
-                return '한국 독자 관련성 없음'
+                # automotive 카테고리 소스는 영어 기사도 허용
+                if item.get('source_category') == 'automotive':
+                    pass
+                else:
+                    return '한국 독자 관련성 없음'
 
         elif rule_id == 'unverified_source':
             if item.get('source_trust_level') == 'unknown':
@@ -604,6 +608,7 @@ def collect_rss_feeds(sources_cfg: dict) -> list[dict]:
                     'search_demand_score': 8,
                     'topic_type': 'trending',
                     '_trust_override': trust,
+                    'source_category': feed_cfg.get('category', ''),
                 })
         except Exception as e:
             logger.warning(f"RSS 수집 실패 ({url}): {e}")

@@ -47,6 +47,36 @@
       "url": "https://news.einfomax.co.kr/rss/allArticle.xml",
       "category": "finance",
       "trust_level": "medium"
+    },
+    {
+      "name": "EE Times",
+      "url": "https://www.eetimes.com/feed/",
+      "category": "automotive",
+      "trust_level": "high"
+    },
+    {
+      "name": "Embedded.com",
+      "url": "https://www.embedded.com/feed/",
+      "category": "automotive",
+      "trust_level": "high"
+    },
+    {
+      "name": "Automotive World",
+      "url": "https://www.automotiveworld.com/feed/",
+      "category": "automotive",
+      "trust_level": "high"
+    },
+    {
+      "name": "Semiconductor Engineering",
+      "url": "https://semiengineering.com/feed/",
+      "category": "automotive",
+      "trust_level": "high"
+    },
+    {
+      "name": "NXP Newsroom",
+      "url": "https://www.nxp.com/rss/news.xml",
+      "category": "automotive",
+      "trust_level": "high"
     }
   ],
   "x_search": {

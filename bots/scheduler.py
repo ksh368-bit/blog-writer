@@ -557,6 +557,37 @@ def job_novel_pipeline():
         logger.error(f"소설 파이프라인 오류: {e}")
 
 
+# ─── 전장반도체 브리핑 잡 ────────────────────────────
+
+def job_morning_brief():
+    """07:30 전장반도체 아침 브리핑 — 오늘 수집된 전장반도체 토픽을 텔레그램으로 발송."""
+    logger.info("[스케줄] 전장반도체 아침 브리핑 시작")
+    try:
+        import json
+        from automotive_pipeline import filter_automotive_topics, format_morning_brief
+
+        topics_dir = DATA_DIR / 'topics'
+        today = datetime.now().strftime('%Y%m%d')
+
+        # 오늘 수집된 토픽 로드
+        all_topics = []
+        for f in sorted(topics_dir.glob(f'{today}_*.json')):
+            try:
+                all_topics.append(json.loads(f.read_text(encoding='utf-8')))
+            except Exception:
+                pass
+
+        # 전장반도체 관련 토픽만 필터링 (최대 5개)
+        auto_topics = filter_automotive_topics(all_topics)[:5]
+
+        msg = format_morning_brief(auto_topics)
+        _telegram_notify(msg)
+        logger.info(f"아침 브리핑 발송 완료: {len(auto_topics)}개 토픽")
+    except Exception as e:
+        logger.error(f"아침 브리핑 오류: {e}")
+        _telegram_notify(f"⚠️ 아침 브리핑 오류: {e}")
+
+
 # ─── Telegram 명령 핸들러 ────────────────────────────
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -876,6 +907,52 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_map[text](update, context)
         return
 
+    # 전장반도체 인사이트 메모 감지 및 글 생성 트리거
+    try:
+        from automotive_pipeline import parse_insight_memo, filter_automotive_topics, format_morning_brief
+        import json
+
+        memo = parse_insight_memo(text)
+        if memo is not None:
+            await update.message.reply_text(
+                "✅ 인사이트 메모 수신!\n\n"
+                f"📝 메모: {memo['memo']}\n"
+                + (f"📌 참조 토픽: {memo['topic_ref']}번\n" if memo['topic_ref'] else "") +
+                "\n글 생성을 시작합니다... 발행되면 링크를 보내드릴게요."
+            )
+
+            # 오늘 전장반도체 토픽 로드
+            topics_dir = DATA_DIR / 'topics'
+            today = datetime.now().strftime('%Y%m%d')
+            all_topics = []
+            for f in sorted(topics_dir.glob(f'{today}_*.json')):
+                try:
+                    all_topics.append(json.loads(f.read_text(encoding='utf-8')))
+                except Exception:
+                    pass
+            auto_topics = filter_automotive_topics(all_topics)
+
+            # 참조 토픽 선택 (번호 지정 시 해당 토픽, 없으면 1위)
+            selected_topic = None
+            if memo['topic_ref'] and len(auto_topics) >= memo['topic_ref']:
+                selected_topic = auto_topics[memo['topic_ref'] - 1]
+            elif auto_topics:
+                selected_topic = auto_topics[0]
+
+            if selected_topic:
+                # 인사이트 메모를 토픽에 추가해 글 생성 트리거
+                selected_topic['user_insight'] = memo['memo']
+                selected_topic['corner'] = '전장반도체'
+                insight_file = DATA_DIR / 'topics' / f"{today}_insight_{int(datetime.now().timestamp())}.json"
+                insight_file.write_text(
+                    json.dumps(selected_topic, ensure_ascii=False, indent=2),
+                    encoding='utf-8',
+                )
+                logger.info(f"인사이트 토픽 저장: {insight_file.name}")
+            return
+    except Exception as e:
+        logger.warning(f"인사이트 메모 처리 오류 (무시하고 계속): {e}")
+
     # Claude API로 자연어 처리
     if not ANTHROPIC_API_KEY:
         await update.message.reply_text(
@@ -935,6 +1012,33 @@ def job_shorts_produce():
     except Exception as e:
         logger.error(f"쇼츠 잡 오류: {e}")
         _telegram_notify(f"⚠️ 쇼츠 잡 오류: {e}")
+
+
+# ─── 전장반도체 브리핑 Telegram 명령 ──────────────────
+
+async def cmd_morning_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/brief — 전장반도체 아침 브리핑 수동 발송."""
+    await update.message.reply_text("📡 전장반도체 기사를 불러오는 중...")
+    try:
+        import json
+        from automotive_pipeline import filter_automotive_topics, format_morning_brief
+
+        topics_dir = DATA_DIR / 'topics'
+        today = datetime.now().strftime('%Y%m%d')
+
+        all_topics = []
+        for f in sorted(topics_dir.glob(f'{today}_*.json')):
+            try:
+                all_topics.append(json.loads(f.read_text(encoding='utf-8')))
+            except Exception:
+                pass
+
+        auto_topics = filter_automotive_topics(all_topics)[:5]
+        msg = format_morning_brief(auto_topics)
+        await update.message.reply_text(msg, disable_web_page_preview=True)
+    except Exception as e:
+        logger.error(f"/brief 오류: {e}")
+        await update.message.reply_text(f"⚠️ 브리핑 오류: {e}")
 
 
 # ─── Shorts Telegram 명령 ─────────────────────────────
@@ -1059,6 +1163,7 @@ def setup_scheduler() -> AsyncIOScheduler:
         'publish_2': lambda: job_publish(2),
         'publish_3': lambda: job_publish(3),
         'analytics': job_analytics_daily,
+        'morning_brief': job_morning_brief,
     }
     for job in schedule_cfg.get('jobs', []):
         fn = job_map.get(job['id'])
@@ -1146,6 +1251,9 @@ async def main():
 
         # Shorts Bot
         app.add_handler(CommandHandler('shorts', cmd_shorts))
+
+        # 전장반도체 브리핑 (수동 트리거)
+        app.add_handler(CommandHandler('brief', cmd_morning_brief))
 
         # 이미지 파일 수신
         app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

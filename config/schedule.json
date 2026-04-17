@@ -35,6 +35,12 @@
       "hour": 22,
       "minute": 0,
       "description": "분석봇 일일 리포트"
+    },
+    {
+      "id": "morning_brief",
+      "hour": 7,
+      "minute": 30,
+      "description": "전장반도체 아침 브리핑 텔레그램 발송"
     }
   ]
 }

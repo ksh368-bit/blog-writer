@@ -6,6 +6,25 @@ service_account*.json
 *_secret*.json
 *_key*.json
 
+# ─── OAuth / 인증 스크립트 (개인 계정 토큰) ──────────────────
+.openclaw/
+*oauth*.py
+*auth*.py
+get_oauth_token.py
+manual_auth.py
+reauthenticate.py
+reauthenticate_v2.py
+
+# ─── 개인 정체성 / 에이전트 설정 문서 ───────────────────────
+USER.md
+IDENTITY.md
+SOUL.md
+AGENTS.md
+HEARTBEAT.md
+PREVENTION_PLAN.md
+TOOLS.md
+IMPLEMENTATION_STATUS.md
+
 # ─── 내부 기획·설계 문서 (비공개) ───────────────────────────
 blog-engine-final-masterplan-v3.txt
 shorts-bot-masterplan-v2.md
