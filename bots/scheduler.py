@@ -52,6 +52,22 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 
+
+def _telegram_notify(text: str) -> None:
+    """동기 컨텍스트에서 텔레그램 메시지 전송 (requests 사용)."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("TELEGRAM_BOT_TOKEN 또는 CHAT_ID 없음 — 알림 건너뜀")
+        return
+    try:
+        import requests as _req
+        _req.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.warning(f"텔레그램 알림 전송 실패: {e}")
+
 _claude_client: anthropic.Anthropic | None = None
 _conversation_history: dict[int, list] = {}
 
@@ -564,7 +580,7 @@ def job_morning_brief():
     logger.info("[스케줄] 전장반도체 아침 브리핑 시작")
     try:
         import json
-        from automotive_pipeline import filter_automotive_topics, format_morning_brief
+        from bots.automotive_pipeline import filter_automotive_topics, format_morning_brief
 
         topics_dir = DATA_DIR / 'topics'
         today = datetime.now().strftime('%Y%m%d')
@@ -909,7 +925,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 전장반도체 인사이트 메모 감지 및 글 생성 트리거
     try:
-        from automotive_pipeline import parse_insight_memo, filter_automotive_topics, format_morning_brief
+        from bots.automotive_pipeline import parse_insight_memo, filter_automotive_topics, format_morning_brief
         import json
 
         memo = parse_insight_memo(text)
@@ -1021,7 +1037,7 @@ async def cmd_morning_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📡 전장반도체 기사를 불러오는 중...")
     try:
         import json
-        from automotive_pipeline import filter_automotive_topics, format_morning_brief
+        from bots.automotive_pipeline import filter_automotive_topics, format_morning_brief
 
         topics_dir = DATA_DIR / 'topics'
         today = datetime.now().strftime('%Y%m%d')
