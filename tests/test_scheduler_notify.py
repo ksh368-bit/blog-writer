@@ -135,7 +135,7 @@ class TestPublishNextNotify:
         assert expected_url in combined, f"URL '{expected_url}'이 알림 메시지에 없음"
 
     def test_no_notify_on_publish_failure(self, tmp_path, monkeypatch):
-        """발행 실패(중복 차단 등) 시 _telegram_notify가 호출되지 않는다."""
+        """중복 차단 시 _telegram_notify가 호출되지 않는다."""
         import bots.scheduler as sch
 
         article = self._make_article()
@@ -160,7 +160,34 @@ class TestPublishNextNotify:
 
         sch._publish_next()
 
-        assert len(notify_calls) == 0, "실패 시 알림이 호출되면 안 됨"
+        assert len(notify_calls) == 0, "중복 차단 시 알림이 호출되면 안 됨"
+
+    def test_duplicate_draft_is_deleted(self, tmp_path, monkeypatch):
+        """중복 차단된 draft는 삭제된다 (무한 재시도 방지)."""
+        import bots.scheduler as sch
+
+        article = self._make_article()
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        draft_file = drafts_dir / "20260419_abcd1234.json"
+        draft_file.write_text(json.dumps(article, ensure_ascii=False), encoding="utf-8")
+
+        monkeypatch.setattr(sch, "DATA_DIR", tmp_path)
+
+        fake_publisher = types.SimpleNamespace(
+            publish_with_result=mock.Mock(return_value=(False, "기발행 slug 중복: test-slug")),
+            publish=mock.Mock(return_value=False),
+        )
+        fake_converter = types.SimpleNamespace(convert=mock.Mock(return_value="<html/>"))
+
+        monkeypatch.setattr(sch, "_telegram_notify", lambda t: None)
+        import sys
+        monkeypatch.setitem(sys.modules, "publisher_bot", fake_publisher)
+        monkeypatch.setitem(sys.modules, "blog_converter", fake_converter)
+
+        sch._publish_next()
+
+        assert not draft_file.exists(), "중복 차단된 draft 파일이 삭제되지 않음"
 
 
 # ─── 즉시 응답 메시지 타이밍 안내 테스트 ──────────────

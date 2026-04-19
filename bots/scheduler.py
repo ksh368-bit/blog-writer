@@ -548,8 +548,11 @@ def _publish_next():
             article['_html_content'] = html
             article['_body_is_html'] = True
             success, reason = publisher_bot.publish_with_result(article)
-            if success:
+            # 성공 또는 중복 차단(재시도해도 의미 없음) 모두 draft 삭제
+            is_duplicate = reason and ('중복' in reason or 'duplicate' in reason.lower())
+            if success or is_duplicate:
                 draft_file.unlink(missing_ok=True)
+            if success:
                 title = article.get('title', '')
                 url = _get_latest_published_url(title)
                 msg = f"✅ 블로그 발행 완료!\n\n📌 {title}"
