@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
 
   "production_mode": "auto",
   "_production_mode_options": ["auto", "semi_auto"],
