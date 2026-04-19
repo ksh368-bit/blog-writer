@@ -493,6 +493,22 @@ def _load_article_by_slug(date_str: str, slug: str) -> dict:
     return {}
 
 
+def _get_latest_published_url(title: str) -> str:
+    """최근 발행 레코드에서 URL을 찾아 반환한다. 없으면 빈 문자열."""
+    published_dir = DATA_DIR / 'published'
+    if not published_dir.exists():
+        return ''
+    records = sorted(published_dir.glob('*.json'), reverse=True)
+    for record_file in records[:5]:  # 최근 5개만 확인
+        try:
+            rec = json.loads(record_file.read_text(encoding='utf-8'))
+            if rec.get('title') == title or rec.get('url'):
+                return rec.get('url', '')
+        except Exception:
+            pass
+    return ''
+
+
 def _publish_next():
     drafts_dir = DATA_DIR / 'drafts'
     drafts_dir.mkdir(exist_ok=True)
@@ -509,8 +525,15 @@ def _publish_next():
             html = blog_converter.convert(article, save_file=False)
             article['_html_content'] = html
             article['_body_is_html'] = True
-            publisher_bot.publish(article)
-            draft_file.unlink(missing_ok=True)
+            success, reason = publisher_bot.publish_with_result(article)
+            if success:
+                draft_file.unlink(missing_ok=True)
+                title = article.get('title', '')
+                url = _get_latest_published_url(title)
+                msg = f"✅ 블로그 발행 완료!\n\n📌 {title}"
+                if url:
+                    msg += f"\n🔗 {url}"
+                _telegram_notify(msg)
             break
         except Exception as e:
             logger.error(f"드래프트 처리 오류 ({draft_file.name}): {e}")
@@ -931,10 +954,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memo = parse_insight_memo(text)
         if memo is not None:
             await update.message.reply_text(
-                "✅ 인사이트 메모 수신!\n\n"
+                "✅ 인사이트 메모 저장!\n\n"
                 f"📝 메모: {memo['memo']}\n"
                 + (f"📌 참조 토픽: {memo['topic_ref']}번\n" if memo['topic_ref'] else "") +
-                "\n글 생성을 시작합니다... 발행되면 링크를 보내드릴게요."
+                "\n⏰ 다음 08:00에 글이 생성되고, 09:00~17:00 사이에 발행되면 링크를 보내드릴게요."
             )
 
             # 오늘 전장반도체 토픽 로드
