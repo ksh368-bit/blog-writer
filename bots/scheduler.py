@@ -141,6 +141,26 @@ def job_ai_writer():
         logger.error(f"AI 글 작성 트리거 오류: {e}")
 
 
+def _prioritize_topic_files(topic_files: list) -> list:
+    """토픽 파일을 우선순위대로 정렬한다.
+
+    우선순위:
+    1. user_insight 있는 토픽 (인사이트 메모)
+    2. corner='전장반도체' 토픽
+    3. 나머지 (파일명 순)
+    """
+    def _priority(f) -> tuple:
+        try:
+            data = json.loads(Path(f).read_text(encoding='utf-8'))
+        except Exception:
+            data = {}
+        has_insight = 1 if data.get('user_insight') else 0
+        is_auto     = 1 if data.get('corner') == '전장반도체' else 0
+        return (-has_insight, -is_auto, str(f))
+
+    return sorted(topic_files, key=_priority)
+
+
 def _trigger_openclaw_writer():
     topics_dir = DATA_DIR / 'topics'
     drafts_dir = DATA_DIR / 'drafts'
@@ -148,7 +168,9 @@ def _trigger_openclaw_writer():
     drafts_dir.mkdir(exist_ok=True)
     originals_dir.mkdir(exist_ok=True)
     today = datetime.now().strftime('%Y%m%d')
-    topic_files = sorted(topics_dir.glob(f'{today}_*.json'))
+    topic_files = _prioritize_topic_files(
+        list(topics_dir.glob(f'{today}_*.json'))
+    )
     if not topic_files:
         logger.info("오늘 처리할 글감 없음")
         return
