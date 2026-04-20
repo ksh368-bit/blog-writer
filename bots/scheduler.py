@@ -607,13 +607,17 @@ def job_novel_pipeline():
         results = manager.run_all()
         if results:
             for r in results:
+                novel_id = r.get('novel_id', '?')
                 if r.get('error'):
-                    logger.error(f"소설 파이프라인 오류 [{r['novel_id']}]: {r['error']}")
+                    logger.error(f"소설 파이프라인 오류 [{novel_id}]: {r['error']}")
+                elif not r.get('success'):
+                    logger.error(f"소설 파이프라인 실패 [{novel_id}]")
                 else:
+                    ep_num = r.get('episode_num', '?')
                     logger.info(
-                        f"소설 에피소드 완료 [{r['novel_id']}] "
-                        f"제{r['episode_num']}화 blog={bool(r['blog_path'])} "
-                        f"shorts={bool(r['shorts_path'])}"
+                        f"소설 에피소드 완료 [{novel_id}] "
+                        f"제{ep_num}화 blog={bool(r.get('blog_path'))} "
+                        f"shorts={bool(r.get('shorts_path'))}"
                     )
         else:
             logger.info("[소설] 오늘 발행 예정 소설 없음")
