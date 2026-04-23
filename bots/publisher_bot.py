@@ -78,14 +78,18 @@ def load_config(filename: str) -> dict:
 # ─── Google 인증 ─────────────────────────────────────
 
 def get_google_credentials() -> Credentials:
+    from google.auth.exceptions import RefreshError
     creds = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            with open(TOKEN_PATH, 'w') as f:
-                f.write(creds.to_json())
+            try:
+                creds.refresh(Request())
+                with open(TOKEN_PATH, 'w') as f:
+                    f.write(creds.to_json())
+            except RefreshError as e:
+                raise RuntimeError(f"invalid_grant: Token has been expired or revoked. scripts/get_token.py 재실행 필요. ({e})") from e
     if not creds or not creds.valid:
         raise RuntimeError("Google 인증 실패. scripts/get_token.py 를 먼저 실행하세요.")
     return creds

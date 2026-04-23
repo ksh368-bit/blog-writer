@@ -561,6 +561,15 @@ def _publish_next():
                 _telegram_notify(msg)
             break
         except Exception as e:
+            err_str = str(e)
+            if 'invalid_grant' in err_str or 'Token has been expired or revoked' in err_str:
+                logger.error(f"Google OAuth 토큰 만료 — 재인증 필요: {e}")
+                _telegram_notify(
+                    "⚠️ 블로그 발행 실패: Google OAuth 토큰 만료\n\n"
+                    "아래 명령어로 재인증하세요:\n"
+                    "<code>cd ~/work/blog-writer && venv/bin/python scripts/get_token.py</code>"
+                )
+                break  # 모든 draft가 같은 오류로 실패하므로 반복 중단
             logger.error(f"드래프트 처리 오류 ({draft_file.name}): {e}")
 
 
