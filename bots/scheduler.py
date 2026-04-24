@@ -154,7 +154,7 @@ def _prioritize_topic_files(topic_files: list) -> list:
             data = json.loads(Path(f).read_text(encoding='utf-8'))
         except Exception:
             data = {}
-        has_insight = 1 if data.get('user_insight') else 0
+        has_insight = 1 if (data.get('user_insight') or '_insight_' in Path(f).name) else 0
         is_auto     = 1 if data.get('corner') == '전장반도체' else 0
         return (-has_insight, -is_auto, str(f))
 
@@ -534,7 +534,7 @@ def _get_latest_published_url(title: str) -> str:
 def _publish_next():
     drafts_dir = DATA_DIR / 'drafts'
     drafts_dir.mkdir(exist_ok=True)
-    for draft_file in sorted(drafts_dir.glob('*.json')):
+    for draft_file in _prioritize_topic_files(list(drafts_dir.glob('*.json'))):
         try:
             article = json.loads(draft_file.read_text(encoding='utf-8'))
             if article.get('_pending_openclaw'):

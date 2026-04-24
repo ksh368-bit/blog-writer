@@ -83,3 +83,57 @@ class TestPrioritizeTopicFiles:
         result = sch._prioritize_topic_files([auto, insight])
         assert result[0] == insight
         assert result[1] == auto
+
+    def test_insight_filename_without_user_insight_field(self, tmp_path):
+        """파일명에 _insight_ 있으면 user_insight 필드 없어도 최우선 처리."""
+        import bots.scheduler as sch
+
+        normal  = _write_topic(tmp_path, "20260424_aaa.json", {"topic": "일반", "corner": "쉬운세상"})
+        # draft 파일처럼 user_insight 필드 없이 파일명만으로 판별
+        insight = _write_topic(tmp_path, "20260424_insight_1234.json",
+                               {"topic": "인사이트", "corner": "전장반도체"})
+
+        result = sch._prioritize_topic_files([normal, insight])
+        assert result[0] == insight
+
+
+class TestPublishNextPriority:
+    """_publish_next가 draft를 우선순위 순으로 선택하는지 검증."""
+
+    def _make_draft(self, directory, filename, corner="쉬운세상", title="테스트"):
+        import json
+        f = directory / filename
+        f.write_text(json.dumps({
+            "title": title, "slug": title, "corner": corner,
+            "body": "본문", "meta": "메타", "tags": [], "sources": [],
+            "quality_score": 80,
+        }, ensure_ascii=False), encoding="utf-8")
+        return f
+
+    def test_publish_next_processes_insight_before_normal(self, tmp_path, monkeypatch):
+        """_publish_next가 _insight_ draft를 일반 draft보다 먼저 발행한다."""
+        import types, unittest.mock as mock, sys
+        import bots.scheduler as sch
+
+        drafts_dir = tmp_path / "drafts"
+        drafts_dir.mkdir()
+        normal  = self._make_draft(drafts_dir, "20260424_aaa.json", "쉬운세상", "일반글")
+        insight = self._make_draft(drafts_dir, "20260424_insight_999.json", "전장반도체", "인사이트글")
+
+        monkeypatch.setattr(sch, "DATA_DIR", tmp_path)
+
+        published_titles = []
+        fake_publisher = types.SimpleNamespace(
+            publish_with_result=mock.Mock(side_effect=lambda a: (
+                published_titles.append(a["title"]) or (True, "")
+            )),
+            publish=mock.Mock(return_value=True),
+        )
+        fake_converter = types.SimpleNamespace(convert=mock.Mock(return_value="<html/>"))
+        monkeypatch.setattr(sch, "_telegram_notify", lambda t: None)
+        monkeypatch.setitem(sys.modules, "publisher_bot", fake_publisher)
+        monkeypatch.setitem(sys.modules, "blog_converter", fake_converter)
+
+        sch._publish_next()
+
+        assert published_titles[0] == "인사이트글", f"인사이트가 먼저 발행돼야 함, 실제: {published_titles}"
