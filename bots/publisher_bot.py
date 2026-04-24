@@ -619,7 +619,11 @@ def load_published_records() -> list[dict]:
             continue
         for f in sorted(target_dir.glob('*.json')):
             try:
-                records.append(json.loads(f.read_text(encoding='utf-8')))
+                data = json.loads(f.read_text(encoding='utf-8'))
+                # drafts/ 폴더: published_at 없는 파일은 발행 대기 큐 — 중복 체크 대상 제외
+                if dirname == 'drafts' and not data.get('published_at'):
+                    continue
+                records.append(data)
             except Exception:
                 continue
     return records
