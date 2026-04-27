@@ -161,21 +161,28 @@ def _prioritize_topic_files(topic_files: list) -> list:
     return sorted(topic_files, key=_priority)
 
 
-def _drain_pending_to_drafts(quality_threshold: int = 70) -> int:
-    """quality_score >= threshold인 pending_review 글을 drafts로 이동한다.
+def _drain_pending_to_drafts(quality_threshold: int = 70, max_age_days: int = 2) -> int:
+    """quality_score >= threshold이고 max_age_days 이내인 pending_review 글을 drafts로 이동한다.
 
     pipeline이 토큰 예산 초과 등으로 pending_review에 저장한 고품질 글을
     scheduler 발행 큐(drafts/)로 옮겨 다음 발행 슬롯에 자동 발행한다.
+    오래된 파일(수동 검토 필요)은 건드리지 않는다.
     Returns: 이동된 파일 수
     """
+    from datetime import timedelta
     pending_dir = DATA_DIR / 'pending_review'
     drafts_dir = DATA_DIR / 'drafts'
     drafts_dir.mkdir(exist_ok=True)
     if not pending_dir.exists():
         return 0
+    cutoff_date = (datetime.now() - timedelta(days=max_age_days)).strftime('%Y%m%d')
     moved = 0
     for f in sorted(pending_dir.glob('*_pending.json')):
         try:
+            # 파일명 앞 8자리가 날짜 (YYYYMMDD)
+            file_date = f.name[:8]
+            if file_date < cutoff_date:
+                continue  # 오래된 파일 — 수동 검토 대상, 건드리지 않음
             data = json.loads(f.read_text(encoding='utf-8'))
             score = float(data.get('quality_score') or 0)
             if score < quality_threshold:

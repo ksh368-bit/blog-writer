@@ -46,6 +46,26 @@ class TestDrainPendingToDrafts:
         assert len(draft_files) == 1, "고품질 pending 글이 drafts로 이동돼야 함"
         assert not (pending_dir / "20260427_101702_pending.json").exists(), "pending 파일은 삭제돼야 함"
 
+    def test_old_pending_not_moved(self, tmp_path, monkeypatch):
+        """max_age_days보다 오래된 pending 글은 drafts로 이동되지 않는다."""
+        import bots.scheduler as sch
+        monkeypatch.setattr(sch, "DATA_DIR", tmp_path)
+
+        pending_dir = tmp_path / "pending_review"
+        pending_dir.mkdir()
+        (tmp_path / "drafts").mkdir()
+
+        _write(pending_dir, "20260329_101332_pending.json", {
+            "title": "오래된 글", "slug": "old-post",
+            "corner": "쉬운세상", "body": "본문", "quality_score": 88,
+            "pending_reason": "제목 패턴 없음",
+        })
+
+        sch._drain_pending_to_drafts(max_age_days=2)
+
+        assert (pending_dir / "20260329_101332_pending.json").exists(), "오래된 글은 이동되면 안 됨"
+        assert list((tmp_path / "drafts").glob("*.json")) == []
+
     def test_low_quality_pending_not_moved(self, tmp_path, monkeypatch):
         """quality_score < 70인 pending_review 글은 drafts로 이동되지 않는다."""
         import bots.scheduler as sch
