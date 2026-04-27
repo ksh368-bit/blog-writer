@@ -1325,10 +1325,10 @@ def setup_scheduler() -> AsyncIOScheduler:
                           day_of_week='mon', hour=10, minute=0, id='image_batch')
         logger.info("이미지 request 모드: 매주 월요일 10:00 배치 전송 등록")
 
-    # 소설 파이프라인: 매주 월/목 09:00
-    scheduler.add_job(job_novel_pipeline, 'cron',
-                      day_of_week='mon,thu', hour=9, minute=0, id='novel_pipeline')
-    logger.info("소설 파이프라인: 매주 월/목 09:00 등록")
+    # 소설 파이프라인: 비활성화
+    # scheduler.add_job(job_novel_pipeline, 'cron',
+    #                   day_of_week='mon,thu', hour=9, minute=0, id='novel_pipeline')
+    # logger.info("소설 파이프라인: 매주 월/목 09:00 등록")
 
     # Shorts Bot: 10:35 (첫 번째), 16:00 (두 번째)
     try:
