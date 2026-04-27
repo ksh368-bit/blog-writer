@@ -161,6 +161,38 @@ def _prioritize_topic_files(topic_files: list) -> list:
     return sorted(topic_files, key=_priority)
 
 
+def _drain_pending_to_drafts(quality_threshold: int = 70) -> int:
+    """quality_score >= threshold인 pending_review 글을 drafts로 이동한다.
+
+    pipeline이 토큰 예산 초과 등으로 pending_review에 저장한 고품질 글을
+    scheduler 발행 큐(drafts/)로 옮겨 다음 발행 슬롯에 자동 발행한다.
+    Returns: 이동된 파일 수
+    """
+    pending_dir = DATA_DIR / 'pending_review'
+    drafts_dir = DATA_DIR / 'drafts'
+    drafts_dir.mkdir(exist_ok=True)
+    if not pending_dir.exists():
+        return 0
+    moved = 0
+    for f in sorted(pending_dir.glob('*_pending.json')):
+        try:
+            data = json.loads(f.read_text(encoding='utf-8'))
+            score = float(data.get('quality_score') or 0)
+            if score < quality_threshold:
+                continue
+            # pending_* 메타 필드 제거 후 drafts로 이동
+            data.pop('pending_reason', None)
+            data.pop('_write_quality_passed', None)
+            dst = drafts_dir / f.name.replace('_pending.json', '.json')
+            dst.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+            f.unlink()
+            moved += 1
+            logger.info(f"pending_review → drafts: {f.name} (품질 {score}점)")
+        except Exception as e:
+            logger.warning(f"pending_review 이동 실패 ({f.name}): {e}")
+    return moved
+
+
 def _trigger_openclaw_writer():
     topics_dir = DATA_DIR / 'topics'
     drafts_dir = DATA_DIR / 'drafts'
@@ -172,8 +204,17 @@ def _trigger_openclaw_writer():
         list(topics_dir.glob(f'{today}_*.json'))
     )
     if not topic_files:
-        logger.info("오늘 처리할 글감 없음")
-        return
+        # 오늘 글감 없으면 어제 미처리 글감 폴백
+        from datetime import timedelta
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+        topic_files = _prioritize_topic_files(
+            list(topics_dir.glob(f'{yesterday}_*.json'))
+        )
+        if topic_files:
+            logger.info(f"오늘 글감 없음 — 어제({yesterday}) 미처리 글감 {len(topic_files)}개 사용")
+        else:
+            logger.info("오늘 처리할 글감 없음")
+            return
     for topic_file in topic_files[:3]:
         draft_check = drafts_dir / topic_file.name
         original_check = originals_dir / topic_file.name
@@ -532,6 +573,7 @@ def _get_latest_published_url(title: str) -> str:
 
 
 def _publish_next():
+    _drain_pending_to_drafts()  # pipeline pending_review → drafts 자동 회수
     drafts_dir = DATA_DIR / 'drafts'
     drafts_dir.mkdir(exist_ok=True)
     for draft_file in _prioritize_topic_files(list(drafts_dir.glob('*.json'))):
@@ -1229,7 +1271,7 @@ async def cmd_shorts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── 스케줄러 설정 + 메인 ─────────────────────────────
 
 def setup_scheduler() -> AsyncIOScheduler:
-    scheduler = AsyncIOScheduler(timezone='Asia/Seoul')
+    scheduler = AsyncIOScheduler(timezone='Asia/Seoul', misfire_grace_time=60)
     schedule_cfg = load_schedule()
 
     # schedule.json 기반 동적 잡 (collector, ai_writer, analytics, morning_brief)
